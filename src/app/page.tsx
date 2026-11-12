@@ -2,7 +2,7 @@ import Link from "next/link";
 
 const sections = [
   { href: "/tasks", title: "タスク", body: "やることを登録して、終わったらチェック。" },
-  { href: "/mail", title: "メール", body: "Gmail の受信メールを一覧で確認（連携は準備中）。" },
+  { href: "/mail", title: "メール", body: "Gmail の受信メールを取り込んで確認。" },
   { href: "/assignments", title: "課題", body: "大学（AIMS）の課題と締め切りを取り込んで確認。" },
 ];
 

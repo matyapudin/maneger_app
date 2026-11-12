@@ -9,6 +9,13 @@ const dbPath =
 
 let db: Database.Database | undefined;
 
+function addColumnIfMissing(d: Database.Database, table: string, column: string, type: string) {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+}
+
 function getDb(): Database.Database {
   if (!db) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -44,12 +51,18 @@ function getDb(): Database.Database {
         ok INTEGER NOT NULL,
         message TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS oauth_tokens (
+        provider TEXT PRIMARY KEY,
+        refresh_token TEXT NOT NULL,
+        access_token TEXT,
+        expires_at INTEGER,
+        account TEXT
+      );
     `);
     // Columns added after the first version: add them to older databases.
-    const cols = db.prepare("PRAGMA table_info(assignments)").all() as { name: string }[];
-    if (!cols.some((c) => c.name === "url")) {
-      db.exec("ALTER TABLE assignments ADD COLUMN url TEXT");
-    }
+    addColumnIfMissing(db, "assignments", "url", "TEXT");
+    addColumnIfMissing(db, "emails", "snippet", "TEXT");
+    addColumnIfMissing(db, "emails", "url", "TEXT");
   }
   return db;
 }
@@ -67,6 +80,8 @@ export type Email = {
   subject: string;
   received_at: string;
   is_read: number;
+  snippet: string | null;
+  url: string | null;
 };
 
 export type Assignment = {
@@ -108,7 +123,7 @@ export async function listEmails(): Promise<Email[]> {
   await connection();
   return getDb()
     .prepare(
-      "SELECT id, sender, subject, received_at, is_read FROM emails ORDER BY received_at DESC",
+      "SELECT id, sender, subject, received_at, is_read, snippet, url FROM emails ORDER BY received_at DESC",
     )
     .all() as Email[];
 }
@@ -169,4 +184,80 @@ export async function getLastSync(source: string): Promise<SyncLog | null> {
       .prepare("SELECT synced_at, ok, message FROM sync_log WHERE source = ?")
       .get(source) as SyncLog | undefined) ?? null
   );
+}
+
+export type EmailInput = {
+  gmailId: string;
+  sender: string;
+  subject: string;
+  snippet: string;
+  receivedAt: string;
+  isRead: boolean;
+  url: string;
+};
+
+// Replaces the stored inbox with the given messages.
+export function replaceEmails(items: EmailInput[]) {
+  const d = getDb();
+  const upsert = d.prepare(`
+    INSERT INTO emails (gmail_id, sender, subject, snippet, received_at, is_read, url)
+    VALUES (@gmailId, @sender, @subject, @snippet, @receivedAt, @isRead, @url)
+    ON CONFLICT(gmail_id) DO UPDATE SET
+      sender = excluded.sender, subject = excluded.subject, snippet = excluded.snippet,
+      received_at = excluded.received_at, is_read = excluded.is_read, url = excluded.url
+  `);
+  d.transaction(() => {
+    const keep = new Set(items.map((i) => i.gmailId));
+    const existing = d.prepare("SELECT gmail_id FROM emails").all() as { gmail_id: string }[];
+    const del = d.prepare("DELETE FROM emails WHERE gmail_id = ?");
+    for (const row of existing) if (!keep.has(row.gmail_id)) del.run(row.gmail_id);
+    for (const i of items) upsert.run({ ...i, isRead: i.isRead ? 1 : 0 });
+  })();
+}
+
+export function clearEmails() {
+  getDb().prepare("DELETE FROM emails").run();
+}
+
+export type OAuthToken = {
+  refresh_token: string;
+  access_token: string | null;
+  expires_at: number | null;
+  account: string | null;
+};
+
+export function getOAuthToken(provider: string): OAuthToken | null {
+  return (
+    (getDb()
+      .prepare(
+        "SELECT refresh_token, access_token, expires_at, account FROM oauth_tokens WHERE provider = ?",
+      )
+      .get(provider) as OAuthToken | undefined) ?? null
+  );
+}
+
+export function saveOAuthToken(
+  provider: string,
+  t: { refreshToken: string; accessToken: string; expiresAt: number; account: string | null },
+) {
+  getDb()
+    .prepare(
+      `INSERT INTO oauth_tokens (provider, refresh_token, access_token, expires_at, account)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(provider) DO UPDATE SET refresh_token = excluded.refresh_token,
+         access_token = excluded.access_token, expires_at = excluded.expires_at,
+         account = excluded.account`,
+    )
+    .run(provider, t.refreshToken, t.accessToken, t.expiresAt, t.account);
+}
+
+export function clearOAuthToken(provider: string) {
+  getDb().prepare("DELETE FROM oauth_tokens WHERE provider = ?").run(provider);
+}
+
+// Which account is connected, for display (never returns the tokens themselves).
+export async function getConnectedAccount(provider: string): Promise<string | null> {
+  await connection();
+  const t = getOAuthToken(provider);
+  return t ? (t.account ?? "（アカウント不明）") : null;
 }
