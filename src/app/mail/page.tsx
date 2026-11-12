@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { revalidatePath } from "next/cache";
+import { displayName, formatDateTime } from "@/lib/format";
 import { connection } from "next/server";
 import {
   clearEmails,
@@ -47,25 +48,6 @@ async function disconnectGmail() {
   revalidatePath("/mail");
 }
 
-const dateFmt = new Intl.DateTimeFormat("ja-JP", {
-  timeZone: "Asia/Tokyo",
-  month: "numeric",
-  day: "numeric",
-  weekday: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-
-function formatDate(iso: string) {
-  return dateFmt.format(new Date(iso));
-}
-
-// "Taro <taro@example.com>" -> "Taro"
-function displayName(from: string) {
-  const m = from.match(/^\s*"?([^"<]+?)"?\s*<[^>]+>\s*$/);
-  return m ? m[1] : from;
-}
-
 const buttonClass = "rounded bg-foreground px-4 py-2 text-background";
 const subtleButtonClass =
   "rounded border border-black/20 px-4 py-2 dark:border-white/25";
@@ -110,7 +92,7 @@ async function ConnectionPanel() {
       )}
       {last && (
         <p className={`text-sm ${last.ok ? "opacity-75" : "text-red-600 dark:text-red-400"}`}>
-          {formatDate(last.synced_at)}：{last.message}
+          {formatDateTime(last.synced_at)}：{last.message}
         </p>
       )}
     </div>
@@ -135,7 +117,7 @@ async function EmailList() {
               <span className={`truncate ${m.is_read ? "" : "font-semibold"}`}>
                 {displayName(m.sender)}
               </span>
-              <span className="shrink-0 text-sm opacity-60">{formatDate(m.received_at)}</span>
+              <span className="shrink-0 text-sm opacity-60">{formatDateTime(m.received_at)}</span>
             </div>
             <div className={m.is_read ? "" : "font-semibold"}>
               {m.url ? (

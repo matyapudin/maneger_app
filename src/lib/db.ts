@@ -261,3 +261,34 @@ export async function getConnectedAccount(provider: string): Promise<string | nu
   const t = getOAuthToken(provider);
   return t ? (t.account ?? "（アカウント不明）") : null;
 }
+
+export type DashboardData = {
+  openTasks: Task[];
+  pendingAssignments: Assignment[];
+  unreadEmails: Email[];
+  unreadCount: number;
+};
+
+// Everything the home screen needs, read in one go.
+export async function getDashboard(): Promise<DashboardData> {
+  await connection();
+  const d = getDb();
+  return {
+    openTasks: d
+      .prepare("SELECT id, title, due_date, done FROM tasks WHERE done = 0")
+      .all() as Task[],
+    pendingAssignments: d
+      .prepare(
+        "SELECT id, course, title, due_at, submitted, url FROM assignments WHERE submitted = 0",
+      )
+      .all() as Assignment[],
+    unreadEmails: d
+      .prepare(
+        "SELECT id, sender, subject, received_at, is_read, snippet, url FROM emails WHERE is_read = 0 ORDER BY received_at DESC LIMIT 5",
+      )
+      .all() as Email[],
+    unreadCount: (d.prepare("SELECT count(*) AS n FROM emails WHERE is_read = 0").get() as {
+      n: number;
+    }).n,
+  };
+}

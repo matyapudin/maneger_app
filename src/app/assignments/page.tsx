@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { revalidatePath } from "next/cache";
+import { formatDateTime } from "@/lib/format";
 import { connection } from "next/server";
 import {
   getLastSync,
@@ -35,22 +36,9 @@ async function syncFromAims() {
   revalidatePath("/assignments");
 }
 
-const dateFmt = new Intl.DateTimeFormat("ja-JP", {
-  timeZone: "Asia/Tokyo",
-  month: "numeric",
-  day: "numeric",
-  weekday: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-
 // Request time; the list is rendered per request (listAssignments calls connection()).
 function requestTime() {
   return Date.now();
-}
-
-function formatDate(iso: string) {
-  return dateFmt.format(new Date(iso));
 }
 
 async function SyncPanel() {
@@ -73,7 +61,7 @@ async function SyncPanel() {
       )}
       {last && (
         <p className={`text-sm ${last.ok ? "opacity-75" : "text-red-600 dark:text-red-400"}`}>
-          {formatDate(last.synced_at)}：{last.message}
+          {formatDateTime(last.synced_at)}：{last.message}
         </p>
       )}
     </div>
@@ -98,7 +86,7 @@ function AssignmentItem({ a, now }: { a: Assignment; now: number }) {
         {a.due_at && (
           <span className={overdue ? "text-red-600 dark:text-red-400" : ""}>
             {" ・ 〆 "}
-            {formatDate(a.due_at)}
+            {formatDateTime(a.due_at)}
             {overdue && "（期限切れ）"}
           </span>
         )}
