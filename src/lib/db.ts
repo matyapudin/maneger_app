@@ -1,4 +1,5 @@
-import Database from "better-sqlite3";
+// Node.js built-in SQLite: no native add-on to compile, works on any Node >= 22.13.
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { connection } from "next/server";
@@ -7,20 +8,32 @@ import { connection } from "next/server";
 const dbPath =
   process.env.DATABASE_PATH ?? path.join(process.cwd(), "data", "app.db");
 
-let db: Database.Database | undefined;
+let db: DatabaseSync | undefined;
 
-function addColumnIfMissing(d: Database.Database, table: string, column: string, type: string) {
+function addColumnIfMissing(d: DatabaseSync, table: string, column: string, type: string) {
   const cols = d.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (!cols.some((c) => c.name === column)) {
     d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 }
 
-function getDb(): Database.Database {
+// Runs fn inside one transaction; rolls back if it throws.
+function inTransaction(d: DatabaseSync, fn: () => void) {
+  d.exec("BEGIN");
+  try {
+    fn();
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+function getDb(): DatabaseSync {
   if (!db) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    db = new Database(dbPath);
-    db.pragma("journal_mode = WAL");
+    db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA journal_mode = WAL");
     db.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,7 +169,7 @@ export function replaceAssignments(prefix: string, items: AssignmentInput[]) {
       course = excluded.course, title = excluded.title, due_at = excluded.due_at,
       submitted = excluded.submitted, url = excluded.url
   `);
-  d.transaction(() => {
+  inTransaction(d, () => {
     const keep = new Set(items.map((i) => i.sourceId));
     const existing = d
       .prepare("SELECT source_id FROM assignments WHERE source_id LIKE ? || '%'")
@@ -164,7 +177,7 @@ export function replaceAssignments(prefix: string, items: AssignmentInput[]) {
     const del = d.prepare("DELETE FROM assignments WHERE source_id = ?");
     for (const row of existing) if (!keep.has(row.source_id)) del.run(row.source_id);
     for (const i of items) upsert.run({ ...i, submitted: i.submitted ? 1 : 0 });
-  })();
+  });
 }
 
 export function recordSync(source: string, ok: boolean, message: string) {
@@ -206,13 +219,13 @@ export function replaceEmails(items: EmailInput[]) {
       sender = excluded.sender, subject = excluded.subject, snippet = excluded.snippet,
       received_at = excluded.received_at, is_read = excluded.is_read, url = excluded.url
   `);
-  d.transaction(() => {
+  inTransaction(d, () => {
     const keep = new Set(items.map((i) => i.gmailId));
     const existing = d.prepare("SELECT gmail_id FROM emails").all() as { gmail_id: string }[];
     const del = d.prepare("DELETE FROM emails WHERE gmail_id = ?");
     for (const row of existing) if (!keep.has(row.gmail_id)) del.run(row.gmail_id);
     for (const i of items) upsert.run({ ...i, isRead: i.isRead ? 1 : 0 });
-  })();
+  });
 }
 
 export function clearEmails() {

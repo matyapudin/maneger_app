@@ -3,7 +3,8 @@
 タスク管理・メール管理（Gmail）・大学の課題（AIMS）をまとめて管理する Web アプリです。
 
 - フレームワーク: Next.js（TypeScript, App Router）
-- データベース: SQLite（`better-sqlite3`、ファイルは `data/app.db`）
+- データベース: SQLite（Node.js に内蔵の `node:sqlite`、ファイルは `data/app.db`）
+- 必要なもの: Node.js 22.13 以上（https://nodejs.org/ja の LTS 版で OK）
 
 ## 動かし方
 
