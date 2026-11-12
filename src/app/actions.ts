@@ -1,8 +1,62 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { hide, setSetting, unhide, type HiddenKind } from "@/lib/db";
+import {
+  addTask,
+  hide,
+  setAssignmentUserStatus,
+  setSetting,
+  toggleTask,
+  unhide,
+  type AssignmentUserStatus,
+  type HiddenKind,
+} from "@/lib/db";
 import { GMAIL_PRIMARY_ONLY_KEY } from "@/lib/google";
+import { isStale, syncAll } from "@/lib/sync";
+
+// ---------- Refresh ----------
+
+// The ↻ button: import from AIMS and Gmail now.
+export async function refreshAllAction() {
+  await syncAll();
+  revalidatePath("/", "layout");
+}
+
+// Called when the app opens: refresh only if the data is old.
+export async function refreshIfStaleAction(): Promise<boolean> {
+  if (!(await isStale(Date.now()))) return false;
+  await syncAll();
+  revalidatePath("/", "layout");
+  return true;
+}
+
+// ---------- Tasks ----------
+
+export async function addTaskAction(formData: FormData) {
+  const title = String(formData.get("title") ?? "").trim();
+  const due = String(formData.get("due_date") ?? "").trim();
+  if (title) addTask(title, /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : null);
+  revalidatePath("/", "layout");
+}
+
+export async function toggleTaskAction(formData: FormData) {
+  const id = Number(formData.get("id"));
+  if (Number.isInteger(id)) toggleTask(id);
+  revalidatePath("/", "layout");
+}
+
+// ---------- Assignments ----------
+
+// "done" / "not_required", or empty to undo.
+export async function setAssignmentStatusAction(formData: FormData) {
+  const id = Number(formData.get("id"));
+  const raw = String(formData.get("status") ?? "");
+  const status: AssignmentUserStatus | null = raw === "done" || raw === "not_required" ? raw : null;
+  if (Number.isInteger(id)) setAssignmentUserStatus(id, status);
+  revalidatePath("/", "layout");
+}
+
+// ---------- Hiding ----------
 
 const KINDS: HiddenKind[] = ["email", "sender", "assignment", "course"];
 

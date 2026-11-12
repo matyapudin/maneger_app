@@ -1,8 +1,7 @@
 import { hideAction } from "@/app/actions";
 import type { HiddenKind } from "@/lib/db";
 
-export const smallButtonClass =
-  "rounded border border-black/15 px-2 py-0.5 text-xs hover:bg-black/[.05] dark:border-white/20 dark:hover:bg-white/[.08]";
+export const smallButtonClass = "btn btn-xs";
 
 // A small button that hides an item, or everything matching a rule.
 export function HideButton({
