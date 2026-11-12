@@ -3,7 +3,9 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { formatDateTime } from "@/lib/format";
 import { connection } from "next/server";
+import { HideButton, smallButtonClass } from "@/app/hide-button";
 import {
+  countHidden,
   clearServiceToken,
   getLastSync,
   getServiceToken,
@@ -96,9 +98,6 @@ const stateLabel: Record<Exclude<AssignmentState, "pending">, string> = {
   not_required: "提出不要",
 };
 
-const smallButtonClass =
-  "rounded border border-black/15 px-2 py-0.5 text-xs hover:bg-black/[.05] dark:border-white/20 dark:hover:bg-white/[.08]";
-
 function StatusButton({ id, status, label }: { id: number; status: string; label: string }) {
   return (
     <form action={setStatus}>
@@ -136,6 +135,11 @@ function PendingItem({ a, now }: { a: Assignment; now: number }) {
       <div className="flex gap-1">
         <StatusButton id={a.id} status="done" label="完了にする" />
         <StatusButton id={a.id} status="not_required" label="提出不要" />
+        {a.source_id && (
+          <HideButton kind="assignment" value={a.source_id} label={`${a.course}：${a.title}`}>
+            非表示
+          </HideButton>
+        )}
       </div>
     </li>
   );
@@ -155,16 +159,40 @@ function OtherItem({ a }: { a: Assignment }) {
         <Title a={a} />
       </div>
       {userSet && <StatusButton id={a.id} status="" label="元に戻す" />}
+      {a.source_id && (
+        <HideButton kind="assignment" value={a.source_id} label={`${a.course}：${a.title}`}>
+          非表示
+        </HideButton>
+      )}
     </li>
   );
 }
 
 type CourseGroup = { course: string; pending: Assignment[]; other: Assignment[] };
 
+function HiddenNote({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <p className="text-sm opacity-60">
+      非表示 {count} 件（
+      <Link href="/settings#hidden" className="underline">
+        設定
+      </Link>
+      で戻せます）
+    </p>
+  );
+}
+
 async function AssignmentList() {
   const items = await listAssignments();
+  const hiddenCount = await countHidden("assignments");
   if (items.length === 0) {
-    return <p className="opacity-75">課題はまだありません。</p>;
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="opacity-75">課題はまだありません。</p>
+        <HiddenNote count={hiddenCount} />
+      </div>
+    );
   }
   const now = requestTime();
 
@@ -215,9 +243,15 @@ async function AssignmentList() {
                 ))}
               </ul>
             )}
+            <div className="mt-2 flex justify-end">
+              <HideButton kind="course" value={g.course} label={g.course}>
+                この授業を非表示
+              </HideButton>
+            </div>
           </details>
         );
       })}
+      <HiddenNote count={hiddenCount} />
     </div>
   );
 }

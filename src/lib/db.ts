@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { connection } from "next/server";
+import { senderAddress } from "@/lib/format";
 
 // The database lives in a per-user folder, outside the app folder, so
 // re-downloading or updating the app keeps logins and data.
@@ -90,6 +91,12 @@ function getDb(): DatabaseSync {
         ok INTEGER NOT NULL,
         message TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS hidden (
+        kind TEXT NOT NULL,   -- 'email' | 'sender' | 'assignment' | 'course'
+        value TEXT NOT NULL,  -- gmail id, sender address, assignment source id, course name
+        label TEXT,           -- what to show in the 設定 list
+        PRIMARY KEY (kind, value)
+      );
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -115,6 +122,7 @@ function getDb(): DatabaseSync {
     addColumnIfMissing(db, "assignments", "user_status", "TEXT");
     addColumnIfMissing(db, "emails", "snippet", "TEXT");
     addColumnIfMissing(db, "emails", "url", "TEXT");
+    addColumnIfMissing(db, "emails", "sender_address", "TEXT");
   }
   return db;
 }
@@ -128,7 +136,9 @@ export type Task = {
 
 export type Email = {
   id: number;
+  gmail_id: string;
   sender: string;
+  sender_address: string | null;
   subject: string;
   received_at: string;
   is_read: number;
@@ -138,6 +148,7 @@ export type Email = {
 
 export type Assignment = {
   id: number;
+  source_id: string | null;
   course: string;
   title: string;
   due_at: string | null;
@@ -161,7 +172,16 @@ export function assignmentState(a: Assignment): AssignmentState {
 }
 
 const ASSIGNMENT_COLUMNS =
-  "id, course, title, due_at, submitted, url, course_id, requires_submission, user_status";
+  "id, source_id, course, title, due_at, submitted, url, course_id, requires_submission, user_status";
+
+const EMAIL_COLUMNS =
+  "id, gmail_id, sender, sender_address, subject, received_at, is_read, snippet, url";
+
+// Rows not hidden by the user (one by one, or by sender / course rules).
+const VISIBLE_EMAIL_SQL = `gmail_id NOT IN (SELECT value FROM hidden WHERE kind = 'email')
+  AND coalesce(sender_address, '') NOT IN (SELECT value FROM hidden WHERE kind = 'sender')`;
+const VISIBLE_ASSIGNMENT_SQL = `coalesce(source_id, '') NOT IN (SELECT value FROM hidden WHERE kind = 'assignment')
+  AND course NOT IN (SELECT value FROM hidden WHERE kind = 'course')`;
 
 // SQL version of assignmentState(...) === "pending", for queries.
 const PENDING_ASSIGNMENT_SQL =
@@ -197,7 +217,7 @@ export async function listEmails(): Promise<Email[]> {
   await connection();
   return getDb()
     .prepare(
-      "SELECT id, sender, subject, received_at, is_read, snippet, url FROM emails ORDER BY received_at DESC",
+      `SELECT ${EMAIL_COLUMNS} FROM emails WHERE ${VISIBLE_EMAIL_SQL} ORDER BY received_at DESC`,
     )
     .all() as Email[];
 }
@@ -206,7 +226,8 @@ export async function listAssignments(): Promise<Assignment[]> {
   await connection();
   return getDb()
     .prepare(
-      `SELECT ${ASSIGNMENT_COLUMNS} FROM assignments ORDER BY course, due_at IS NULL, due_at`,
+      `SELECT ${ASSIGNMENT_COLUMNS} FROM assignments WHERE ${VISIBLE_ASSIGNMENT_SQL}
+       ORDER BY course, due_at IS NULL, due_at`,
     )
     .all() as Assignment[];
 }
@@ -287,10 +308,11 @@ export type EmailInput = {
 export function replaceEmails(items: EmailInput[]) {
   const d = getDb();
   const upsert = d.prepare(`
-    INSERT INTO emails (gmail_id, sender, subject, snippet, received_at, is_read, url)
-    VALUES (@gmailId, @sender, @subject, @snippet, @receivedAt, @isRead, @url)
+    INSERT INTO emails (gmail_id, sender, sender_address, subject, snippet, received_at, is_read, url)
+    VALUES (@gmailId, @sender, @senderAddress, @subject, @snippet, @receivedAt, @isRead, @url)
     ON CONFLICT(gmail_id) DO UPDATE SET
-      sender = excluded.sender, subject = excluded.subject, snippet = excluded.snippet,
+      sender = excluded.sender, sender_address = excluded.sender_address,
+      subject = excluded.subject, snippet = excluded.snippet,
       received_at = excluded.received_at, is_read = excluded.is_read, url = excluded.url
   `);
   inTransaction(d, () => {
@@ -298,7 +320,9 @@ export function replaceEmails(items: EmailInput[]) {
     const existing = d.prepare("SELECT gmail_id FROM emails").all() as { gmail_id: string }[];
     const del = d.prepare("DELETE FROM emails WHERE gmail_id = ?");
     for (const row of existing) if (!keep.has(row.gmail_id)) del.run(row.gmail_id);
-    for (const i of items) upsert.run({ ...i, isRead: i.isRead ? 1 : 0 });
+    for (const i of items) {
+      upsert.run({ ...i, senderAddress: senderAddress(i.sender), isRead: i.isRead ? 1 : 0 });
+    }
   });
 }
 
@@ -365,16 +389,21 @@ export async function getDashboard(): Promise<DashboardData> {
       .prepare("SELECT id, title, due_date, done FROM tasks WHERE done = 0")
       .all() as Task[],
     pendingAssignments: d
-      .prepare(`SELECT ${ASSIGNMENT_COLUMNS} FROM assignments WHERE ${PENDING_ASSIGNMENT_SQL}`)
+      .prepare(
+        `SELECT ${ASSIGNMENT_COLUMNS} FROM assignments WHERE ${PENDING_ASSIGNMENT_SQL} AND ${VISIBLE_ASSIGNMENT_SQL}`,
+      )
       .all() as Assignment[],
     unreadEmails: d
       .prepare(
-        "SELECT id, sender, subject, received_at, is_read, snippet, url FROM emails WHERE is_read = 0 ORDER BY received_at DESC LIMIT 5",
+        `SELECT ${EMAIL_COLUMNS} FROM emails WHERE is_read = 0 AND ${VISIBLE_EMAIL_SQL}
+         ORDER BY received_at DESC LIMIT 5`,
       )
       .all() as Email[],
-    unreadCount: (d.prepare("SELECT count(*) AS n FROM emails WHERE is_read = 0").get() as {
-      n: number;
-    }).n,
+    unreadCount: (
+      d
+        .prepare(`SELECT count(*) AS n FROM emails WHERE is_read = 0 AND ${VISIBLE_EMAIL_SQL}`)
+        .get() as { n: number }
+    ).n,
   };
 }
 
@@ -418,4 +447,39 @@ export function setSetting(key: string, value: string | null) {
       )
       .run(key, value);
   }
+}
+
+// ---------- Hidden items and rules ----------
+
+export type HiddenKind = "email" | "sender" | "assignment" | "course";
+export type HiddenRule = { kind: HiddenKind; value: string; label: string | null };
+
+export function hide(kind: HiddenKind, value: string, label: string | null) {
+  getDb()
+    .prepare(
+      `INSERT INTO hidden (kind, value, label) VALUES (?, ?, ?)
+       ON CONFLICT(kind, value) DO UPDATE SET label = excluded.label`,
+    )
+    .run(kind, value, label);
+}
+
+export function unhide(kind: HiddenKind, value: string) {
+  getDb().prepare("DELETE FROM hidden WHERE kind = ? AND value = ?").run(kind, value);
+}
+
+export async function listHidden(): Promise<HiddenRule[]> {
+  await connection();
+  return getDb()
+    .prepare("SELECT kind, value, label FROM hidden ORDER BY kind, label")
+    .all() as HiddenRule[];
+}
+
+export async function countHidden(table: "emails" | "assignments"): Promise<number> {
+  await connection();
+  const visible = table === "emails" ? VISIBLE_EMAIL_SQL : VISIBLE_ASSIGNMENT_SQL;
+  return (
+    getDb().prepare(`SELECT count(*) AS n FROM ${table} WHERE NOT (${visible})`).get() as {
+      n: number;
+    }
+  ).n;
 }

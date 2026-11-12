@@ -32,3 +32,9 @@ export function displayName(from: string) {
   const m = from.match(/^\s*"?([^"<]+?)"?\s*<[^>]+>\s*$/);
   return m ? m[1] : from;
 }
+
+// "Taro <taro@example.com>" -> "taro@example.com" (lower case, for matching)
+export function senderAddress(from: string) {
+  const m = from.match(/<([^>]+)>/);
+  return (m ? m[1] : from).trim().toLowerCase();
+}

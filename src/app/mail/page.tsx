@@ -3,7 +3,9 @@ import { revalidatePath } from "next/cache";
 import { displayName, formatDateTime } from "@/lib/format";
 import { connection } from "next/server";
 import Link from "next/link";
+import { HideButton } from "@/app/hide-button";
 import {
+  countHidden,
   clearOAuthToken,
   getConnectedAccount,
   getLastSync,
@@ -72,10 +74,29 @@ async function SyncPanel() {
   );
 }
 
+function HiddenNote({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <p className="mt-2 text-sm opacity-60">
+      非表示 {count} 件（
+      <Link href="/settings#hidden" className="underline">
+        設定
+      </Link>
+      で戻せます）
+    </p>
+  );
+}
+
 async function EmailList() {
   const emails = await listEmails();
+  const hiddenCount = await countHidden("emails");
   if (emails.length === 0) {
-    return <p className="opacity-75">メールはまだありません。</p>;
+    return (
+      <div>
+        <p className="opacity-75">メールはまだありません。</p>
+        <HiddenNote count={hiddenCount} />
+      </div>
+    );
   }
   const unread = emails.filter((m) => !m.is_read).length;
   return (
@@ -102,9 +123,28 @@ async function EmailList() {
               )}
             </div>
             {m.snippet && <div className="truncate text-sm opacity-60">{m.snippet}</div>}
+            <div className="mt-1 flex flex-wrap gap-1">
+              <HideButton kind="email" value={m.gmail_id} label={m.subject}>
+                非表示
+              </HideButton>
+              {m.sender_address && (
+                <HideButton
+                  kind="sender"
+                  value={m.sender_address}
+                  label={
+                    displayName(m.sender).toLowerCase() === m.sender_address
+                      ? m.sender_address
+                      : `${displayName(m.sender)}（${m.sender_address}）`
+                  }
+                >
+                  この差出人を非表示
+                </HideButton>
+              )}
+            </div>
           </li>
         ))}
       </ul>
+      <HiddenNote count={hiddenCount} />
     </section>
   );
 }

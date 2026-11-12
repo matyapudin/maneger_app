@@ -1,6 +1,8 @@
 import { Suspense } from "react";
 import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
+import { setPrimaryOnlyAction, unhideAction } from "@/app/actions";
+import { smallButtonClass } from "@/app/hide-button";
 import {
   clearEmails,
   clearServiceToken,
@@ -9,12 +11,15 @@ import {
   getLastSync,
   getServiceToken,
   getSetting,
+  listHidden,
   recordSync,
+  type HiddenKind,
   setSetting,
 } from "@/lib/db";
 import { formatDateTime } from "@/lib/format";
 import {
   disconnect,
+  GMAIL_PRIMARY_ONLY_KEY,
   getGoogleConfig,
   GOOGLE_CLIENT_ID_KEY,
   GOOGLE_CLIENT_SECRET_KEY,
@@ -223,6 +228,61 @@ async function GoogleSection({ origin }: { origin: string }) {
   );
 }
 
+const hiddenKindLabel: Record<HiddenKind, string> = {
+  course: "授業",
+  assignment: "課題",
+  sender: "差出人",
+  email: "メール",
+};
+
+async function FilterSection() {
+  await connection();
+  const primaryOnly = getSetting(GMAIL_PRIMARY_ONLY_KEY) === "1";
+  const rules = await listHidden();
+  return (
+    <section id="hidden" className={`${cardClass} scroll-mt-4`}>
+      <h2 className="font-semibold">表示しないもの</h2>
+
+      <form action={setPrimaryOnlyAction} className="flex flex-wrap items-center gap-3">
+        <input type="hidden" name="enabled" value={primaryOnly ? "0" : "1"} />
+        <p className="text-sm">
+          Gmail の「メイン」タブだけ取り込む（プロモーション・ソーシャルなどは取り込まない）：
+          <span className="font-medium">{primaryOnly ? "オン" : "オフ"}</span>
+        </p>
+        <button type="submit" className={smallButtonClass}>
+          {primaryOnly ? "オフにする" : "オンにする"}
+        </button>
+      </form>
+      <p className="-mt-2 text-xs opacity-60">切り替えたあと、メール画面で取り込み直すと反映されます。</p>
+
+      <h3 className="text-sm font-semibold">非表示にしたもの（{rules.length}）</h3>
+      {rules.length === 0 ? (
+        <p className="text-sm opacity-75">
+          ありません。メール画面や課題画面の「非表示」ボタンで追加できます。
+        </p>
+      ) : (
+        <ul className="divide-y divide-black/10 dark:divide-white/15">
+          {rules.map((r) => (
+            <li key={`${r.kind}:${r.value}`} className="flex items-baseline gap-3 py-1.5 text-sm">
+              <span className="shrink-0 rounded bg-black/[.06] px-1.5 text-xs dark:bg-white/[.1]">
+                {hiddenKindLabel[r.kind]}
+              </span>
+              <span className="min-w-0 flex-1 truncate">{r.label ?? r.value}</span>
+              <form action={unhideAction}>
+                <input type="hidden" name="kind" value={r.kind} />
+                <input type="hidden" name="value" value={r.value} />
+                <button type="submit" className={smallButtonClass}>
+                  表示に戻す
+                </button>
+              </form>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 async function DataSection() {
   await connection();
   return (
@@ -249,6 +309,9 @@ export default async function SettingsPage() {
       </Suspense>
       <Suspense fallback={<p>読み込み中…</p>}>
         <GoogleSection origin={origin} />
+      </Suspense>
+      <Suspense fallback={<p>読み込み中…</p>}>
+        <FilterSection />
       </Suspense>
       <Suspense fallback={<p>読み込み中…</p>}>
         <DataSection />

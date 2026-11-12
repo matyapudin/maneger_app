@@ -29,6 +29,8 @@ export class GoogleError extends Error {
 type GoogleConfig = { clientId: string; clientSecret: string };
 
 export const GOOGLE_CLIENT_ID_KEY = "google_client_id";
+// "1" = import only Gmail's Primary tab (skip Promotions, Social, Updates, Forums).
+export const GMAIL_PRIMARY_ONLY_KEY = "gmail_primary_only";
 export const GOOGLE_CLIENT_SECRET_KEY = "google_client_secret";
 
 // The Google OAuth client entered on the 設定 screen.
@@ -179,7 +181,10 @@ export async function fetchInbox(config: GoogleConfig, max = 30): Promise<GmailM
   const token = await getAccessToken(config);
   const account = getOAuthToken("google")?.account ?? "";
   const list = await gmailGet<MessageList>(
-    `/users/me/messages?${new URLSearchParams({ maxResults: String(max), q: "in:inbox" })}`,
+    `/users/me/messages?${new URLSearchParams({
+      maxResults: String(max),
+      q: getSetting(GMAIL_PRIMARY_ONLY_KEY) === "1" ? "in:inbox category:primary" : "in:inbox",
+    })}`,
     token,
   );
   const ids = list.messages ?? [];
