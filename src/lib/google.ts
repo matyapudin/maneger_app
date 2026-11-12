@@ -212,14 +212,71 @@ export async function getAccessToken(config: GoogleConfig): Promise<string> {
 }
 
 type MessageList = { messages?: { id: string; threadId: string }[] };
+type Part = {
+  mimeType?: string;
+  headers?: { name: string; value: string }[];
+  body?: { data?: string; size?: number };
+  parts?: Part[];
+};
+
 type Message = {
   id: string;
   threadId: string;
   labelIds?: string[];
   snippet?: string;
   internalDate: string; // ms since epoch
-  payload?: { headers?: { name: string; value: string }[] };
+  payload?: Part;
 };
+
+// Gmail returns each part in its original charset (Japanese mail is often
+// ISO-2022-JP or Shift_JIS), base64url-encoded.
+function decodePart(part: Part): string {
+  if (!part.body?.data) return "";
+  const type = part.headers?.find((h) => h.name.toLowerCase() === "content-type")?.value ?? "";
+  const charset = type.match(/charset="?([^";\s]+)"?/i)?.[1] ?? "utf-8";
+  const bytes = Buffer.from(part.body.data, "base64url");
+  try {
+    return new TextDecoder(charset).decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+}
+
+function decodeEntities(s: string) {
+  return s
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&amp;/g, "&");
+}
+
+function htmlToText(html: string) {
+  return decodeEntities(
+    html
+      .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+      .replace(/<br\s*\/?>|<\/(p|div|li|tr|h\d)>/gi, "\n")
+      .replace(/<[^>]+>/g, " "),
+  );
+}
+
+// The plain text of a message: text/plain if there is one, else text/html
+// with tags removed. Used only to look for dates; it is not stored.
+function bodyText(payload: Part | undefined, limit = 8000): string {
+  if (!payload) return "";
+  const plain: string[] = [];
+  const html: string[] = [];
+  const walk = (p: Part) => {
+    if (p.mimeType === "text/plain") plain.push(decodePart(p));
+    else if (p.mimeType === "text/html") html.push(decodePart(p));
+    for (const c of p.parts ?? []) walk(c);
+  };
+  walk(payload);
+  const text = plain.length ? plain.join("\n") : html.map(htmlToText).join("\n");
+  return text.slice(0, limit);
+}
 
 export type GmailMessage = {
   gmailId: string;
@@ -229,9 +286,10 @@ export type GmailMessage = {
   receivedAt: string; // ISO 8601
   isRead: boolean;
   url: string;
+  bodyText: string; // not stored; used to find dates
 };
 
-// Fetches the newest inbox messages (metadata only, no bodies).
+// Fetches the newest inbox messages.
 export async function fetchInbox(config: GoogleConfig, max = 30): Promise<GmailMessage[]> {
   const token = await getAccessToken(config);
   const account = getOAuthToken("google")?.account ?? "";
@@ -243,8 +301,8 @@ export async function fetchInbox(config: GoogleConfig, max = 30): Promise<GmailM
     token,
   );
   const ids = list.messages ?? [];
-  const query = new URLSearchParams({ format: "metadata" });
-  for (const h of ["From", "Subject"]) query.append("metadataHeaders", h);
+  // "full" includes the body, which is searched for dates (task suggestions).
+  const query = new URLSearchParams({ format: "full" });
 
   const results: GmailMessage[] = [];
   // Small batches keep us well under Gmail's per-user rate limits.
@@ -259,10 +317,11 @@ export async function fetchInbox(config: GoogleConfig, max = 30): Promise<GmailM
         gmailId: m.id,
         sender: header("From") || "（差出人不明）",
         subject: header("Subject") || "（件名なし）",
-        snippet: m.snippet ?? "",
+        snippet: decodeEntities(m.snippet ?? ""),
         receivedAt: new Date(Number(m.internalDate)).toISOString(),
         isRead: !(m.labelIds ?? []).includes("UNREAD"),
         url: `https://mail.google.com/mail/?${new URLSearchParams({ authuser: account })}#all/${m.threadId}`,
+        bodyText: bodyText(m.payload),
       });
     }
   }

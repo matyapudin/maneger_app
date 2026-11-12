@@ -11,7 +11,9 @@ import {
   setSetting,
   replaceAssignments,
   replaceEmails,
+  replaceSuggestions,
 } from "@/lib/db";
+import { extractDates } from "@/lib/date-extract";
 import { fetchCalendarEvents, writeDeadlines, writeDeadlinesEnabled } from "@/lib/calendar";
 import { fetchInbox, getGoogleConfig, GoogleError, hasCalendarAccess } from "@/lib/google";
 import { AIMS_SERVICE, fetchAssignments, getMoodleConfig, MoodleError } from "@/lib/moodle";
@@ -57,6 +59,17 @@ export async function syncGmail(): Promise<void> {
   try {
     const items = await fetchInbox(config);
     replaceEmails(items);
+    // Dates written in each email become task suggestions (never added
+    // automatically; the user adds them from the mail panel).
+    const now = Date.now();
+    replaceSuggestions(
+      items.flatMap((m) =>
+        extractDates(`${m.subject}\n${m.bodyText}`, Date.parse(m.receivedAt), now).map((f) => ({
+          gmailId: m.gmailId,
+          ...f,
+        })),
+      ),
+    );
     recordSync("gmail", true, `${items.length} 件のメールを取り込みました。`);
   } catch (e) {
     if (e instanceof GoogleError && e.needsReconnect) {

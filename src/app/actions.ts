@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import {
   addTask,
+  addTaskFromSuggestion,
+  dismissSuggestion,
   hide,
   recordSync,
   setAssignmentUserStatus,
@@ -44,6 +46,17 @@ export async function addTaskAction(formData: FormData) {
 export async function toggleTaskAction(formData: FormData) {
   const id = Number(formData.get("id"));
   if (Number.isInteger(id)) toggleTask(id);
+  revalidatePath("/", "layout");
+}
+
+// Suggested from an email: added only when the user presses the button.
+export async function addSuggestedTaskAction(formData: FormData) {
+  addTaskFromSuggestion(String(formData.get("id") ?? ""));
+  revalidatePath("/", "layout");
+}
+
+export async function dismissSuggestionAction(formData: FormData) {
+  dismissSuggestion(String(formData.get("id") ?? ""));
   revalidatePath("/", "layout");
 }
 

@@ -102,6 +102,15 @@ function getDb(): DatabaseSync {
         location TEXT,
         url TEXT
       );
+      CREATE TABLE IF NOT EXISTS mail_suggestions (
+        id TEXT PRIMARY KEY,          -- gmailId|date|time
+        gmail_id TEXT NOT NULL,
+        date TEXT NOT NULL,           -- YYYY-MM-DD
+        time TEXT,                    -- HH:MM
+        kind TEXT NOT NULL,           -- deadline | event | date
+        context TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'new'  -- new | added | dismissed
+      );
       CREATE TABLE IF NOT EXISTS hidden (
         kind TEXT NOT NULL,   -- 'email' | 'sender' | 'assignment' | 'course'
         value TEXT NOT NULL,  -- gmail id, sender address, assignment source id, course name
@@ -135,6 +144,7 @@ function getDb(): DatabaseSync {
     addColumnIfMissing(db, "emails", "url", "TEXT");
     addColumnIfMissing(db, "emails", "sender_address", "TEXT");
     addColumnIfMissing(db, "oauth_tokens", "scopes", "TEXT");
+    addColumnIfMissing(db, "tasks", "url", "TEXT");
   }
   return db;
 }
@@ -144,6 +154,7 @@ export type Task = {
   title: string;
   due_date: string | null;
   done: number;
+  url: string | null; // e.g. the email a suggested task came from
 };
 
 export type Email = {
@@ -210,15 +221,15 @@ export async function listTasks(): Promise<Task[]> {
   await connection();
   return getDb()
     .prepare(
-      "SELECT id, title, due_date, done FROM tasks ORDER BY done, due_date IS NULL, due_date, id",
+      "SELECT id, title, due_date, done, url FROM tasks ORDER BY done, due_date IS NULL, due_date, id",
     )
     .all() as Task[];
 }
 
-export function addTask(title: string, dueDate: string | null) {
+export function addTask(title: string, dueDate: string | null, url: string | null = null) {
   getDb()
-    .prepare("INSERT INTO tasks (title, due_date) VALUES (?, ?)")
-    .run(title, dueDate);
+    .prepare("INSERT INTO tasks (title, due_date, url) VALUES (?, ?, ?)")
+    .run(title, dueDate, url);
 }
 
 export function toggleTask(id: number) {
@@ -279,9 +290,14 @@ export function replaceAssignments(prefix: string, items: AssignmentInput[]) {
     for (const row of existing) if (!keep.has(row.source_id)) del.run(row.source_id);
     for (const i of items) {
       upsert.run({
-        ...i,
+        sourceId: i.sourceId,
+        courseId: i.courseId,
+        course: i.course,
+        title: i.title,
+        dueAt: i.dueAt,
         submitted: i.submitted ? 1 : 0,
         requiresSubmission: i.requiresSubmission ? 1 : 0,
+        url: i.url,
       });
     }
   });
@@ -333,7 +349,17 @@ export function replaceEmails(items: EmailInput[]) {
     const del = d.prepare("DELETE FROM emails WHERE gmail_id = ?");
     for (const row of existing) if (!keep.has(row.gmail_id)) del.run(row.gmail_id);
     for (const i of items) {
-      upsert.run({ ...i, senderAddress: senderAddress(i.sender), isRead: i.isRead ? 1 : 0 });
+      // Pass only the stored fields: node:sqlite rejects unknown named parameters.
+      upsert.run({
+        gmailId: i.gmailId,
+        sender: i.sender,
+        senderAddress: senderAddress(i.sender),
+        subject: i.subject,
+        snippet: i.snippet,
+        receivedAt: i.receivedAt,
+        isRead: i.isRead ? 1 : 0,
+        url: i.url,
+      });
     }
   });
 }
@@ -405,7 +431,7 @@ export async function getDashboard(): Promise<DashboardData> {
   const d = getDb();
   return {
     openTasks: d
-      .prepare("SELECT id, title, due_date, done FROM tasks WHERE done = 0")
+      .prepare("SELECT id, title, due_date, done, url FROM tasks WHERE done = 0")
       .all() as Task[],
     pendingAssignments: d
       .prepare(
@@ -538,7 +564,19 @@ export function replaceCalendarEvents(
   );
   inTransaction(d, () => {
     d.exec("DELETE FROM calendar_events");
-    for (const r of rows) insert.run({ ...r, allDay: r.allDay ? 1 : 0 });
+    for (const r of rows) {
+      insert.run({
+        id: r.id,
+        calendarName: r.calendarName,
+        color: r.color,
+        title: r.title,
+        startMs: r.startMs,
+        endMs: r.endMs,
+        allDay: r.allDay ? 1 : 0,
+        location: r.location,
+        url: r.url,
+      });
+    }
   });
 }
 
@@ -579,4 +617,81 @@ export function pendingDeadlines(): {
     dueMs: Date.parse(r.due_at),
     url: r.url,
   }));
+}
+
+// ---------- Task suggestions from emails ----------
+
+export type SuggestionKind = "deadline" | "event" | "date";
+
+export type MailSuggestion = {
+  id: string;
+  gmail_id: string;
+  date: string;
+  time: string | null;
+  kind: SuggestionKind;
+  context: string;
+};
+
+// Stores the dates found in each imported email. Suggestions the user added
+// or dismissed keep that status, so they never come back.
+export function replaceSuggestions(
+  found: { gmailId: string; date: string; time: string | null; kind: SuggestionKind; context: string }[],
+) {
+  const d = getDb();
+  const ids = found.map((f) => `${f.gmailId}|${f.date}|${f.time ?? ""}`);
+  const insert = d.prepare(
+    `INSERT OR IGNORE INTO mail_suggestions (id, gmail_id, date, time, kind, context)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  inTransaction(d, () => {
+    const keep = new Set(ids);
+    const open = d.prepare("SELECT id FROM mail_suggestions WHERE status = 'new'").all() as {
+      id: string;
+    }[];
+    const del = d.prepare("DELETE FROM mail_suggestions WHERE id = ?");
+    for (const row of open) if (!keep.has(row.id)) del.run(row.id);
+    found.forEach((f, i) => insert.run(ids[i], f.gmailId, f.date, f.time, f.kind, f.context));
+  });
+}
+
+// Open suggestions for emails still shown, from `today` (YYYY-MM-DD) on.
+export async function listSuggestions(today: string): Promise<MailSuggestion[]> {
+  await connection();
+  return getDb()
+    .prepare(
+      `SELECT s.id, s.gmail_id, s.date, s.time, s.kind, s.context
+       FROM mail_suggestions s JOIN emails e ON e.gmail_id = s.gmail_id
+       WHERE s.status = 'new' AND s.date >= ? AND ${VISIBLE_EMAIL_SQL.replaceAll("gmail_id", "e.gmail_id").replaceAll("sender_address", "e.sender_address")}
+       ORDER BY s.date, s.time`,
+    )
+    .all(today) as MailSuggestion[];
+}
+
+export function dismissSuggestion(id: string) {
+  getDb().prepare("UPDATE mail_suggestions SET status = 'dismissed' WHERE id = ?").run(id);
+}
+
+// "Re: 【経済学入門】第4回レポート" -> "【経済学入門】第4回レポート"
+function taskTitleFromSubject(subject: string) {
+  return subject.replace(/^\s*((re|fwd?|fw|転送)\s*[:：]\s*)+/i, "").trim() || "メールの件名なし";
+}
+
+// Adds the suggestion as a task (only when the user asks) and marks it added.
+export function addTaskFromSuggestion(id: string): boolean {
+  const d = getDb();
+  const s = d
+    .prepare(
+      `SELECT s.date, s.time, s.kind, e.subject, e.url FROM mail_suggestions s
+       JOIN emails e ON e.gmail_id = s.gmail_id WHERE s.id = ? AND s.status = 'new'`,
+    )
+    .get(id) as
+    | { date: string; time: string | null; kind: SuggestionKind; subject: string; url: string | null }
+    | undefined;
+  if (!s) return false;
+  const when = s.time ? (s.kind === "deadline" ? `（${s.time}まで）` : `（${s.time}〜）`) : "";
+  inTransaction(d, () => {
+    addTask(`${taskTitleFromSubject(s.subject)}${when}`, s.date, s.url);
+    d.prepare("UPDATE mail_suggestions SET status = 'added' WHERE id = ?").run(id);
+  });
+  return true;
 }

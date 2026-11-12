@@ -13,7 +13,13 @@ function TaskCell({ t, now }: { t: Task; now: number }) {
       </form>
       <div className="min-w-0">
         <div className="truncate text-[13.5px] font-medium" title={t.title}>
-          {t.title}
+          {t.url ? (
+            <a href={t.url} target="_blank" rel="noopener noreferrer" className="hover:underline" title="元のメールを開く">
+              {t.title} <span className="accent">↗</span>
+            </a>
+          ) : (
+            t.title
+          )}
         </div>
         <div className={`text-xs ${overdue ? "danger font-semibold" : "muted"}`}>
           {dueMs === null ? "締め切りなし" : `${formatDue(dueMs, now, true)}${overdue ? " 期限切れ" : ""}`}

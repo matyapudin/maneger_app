@@ -8,6 +8,7 @@ import {
   listAssignments,
   listCalendarEvents,
   listEmails,
+  listSuggestions,
   listTasks,
 } from "@/lib/db";
 import Link from "next/link";
@@ -42,6 +43,8 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/">["searc
   const JST = 9 * 3_600_000;
   const weekFrom = (weekStart(jstDay(now)) + weekOffset * 7) * DAY_MS - JST;
   const events = await listCalendarEvents(weekFrom, weekFrom + 7 * DAY_MS);
+  const todayJst = new Date(jstDay(now) * DAY_MS).toISOString().slice(0, 10);
+  const suggestions = await listSuggestions(todayJst);
   const calendarNotice =
     gmailConnected && !hasCalendarAccess() ? (
       <Link href="/settings" className="accent hover:underline">
@@ -56,6 +59,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/">["searc
       <div className="grid min-h-0 flex-1 grid-cols-[1.55fr_1fr] grid-rows-2 gap-[var(--gap)]">
         <MailPanel
           emails={emails}
+          suggestions={suggestions}
           connected={gmailConnected}
           primaryOnly={getSetting(GMAIL_PRIMARY_ONLY_KEY) === "1"}
           hiddenCount={hiddenEmails}
