@@ -6,11 +6,13 @@ import {
   getServiceToken,
   getSetting,
   listAssignments,
+  listCalendarEvents,
   listEmails,
   listTasks,
 } from "@/lib/db";
-import { requestTime } from "@/lib/format";
-import { GMAIL_PRIMARY_ONLY_KEY, getGoogleConfig } from "@/lib/google";
+import Link from "next/link";
+import { DAY_MS, jstDay, requestTime, weekStart } from "@/lib/format";
+import { GMAIL_PRIMARY_ONLY_KEY, getGoogleConfig, hasCalendarAccess } from "@/lib/google";
 import { AIMS_SERVICE } from "@/lib/moodle";
 import { AimsPanel } from "@/components/aims-panel";
 import { CalendarPanel } from "@/components/calendar-panel";
@@ -36,6 +38,17 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/">["searc
   const pending = assignments.filter((a) => assignmentState(a) === "pending");
   const gmailConnected = getGoogleConfig() !== null && gmailAccount !== null;
 
+  // Google Calendar events for the week on screen (stored days are JST).
+  const JST = 9 * 3_600_000;
+  const weekFrom = (weekStart(jstDay(now)) + weekOffset * 7) * DAY_MS - JST;
+  const events = await listCalendarEvents(weekFrom, weekFrom + 7 * DAY_MS);
+  const calendarNotice =
+    gmailConnected && !hasCalendarAccess() ? (
+      <Link href="/settings" className="accent hover:underline">
+        Google カレンダーを表示するには許可を追加
+      </Link>
+    ) : null;
+
   return (
     <div className="flex h-screen min-h-[640px] flex-col gap-[var(--gap)] p-[var(--gap)]">
       <TopBar pendingAssignments={pending} openTasks={openTasks} now={now} />
@@ -56,7 +69,14 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/">["searc
             now={now}
           />
         </div>
-        <CalendarPanel assignments={pending} tasks={openTasks} now={now} weekOffset={weekOffset} />
+        <CalendarPanel
+          assignments={pending}
+          tasks={openTasks}
+          events={events}
+          calendarNotice={calendarNotice}
+          now={now}
+          weekOffset={weekOffset}
+        />
       </div>
     </div>
   );

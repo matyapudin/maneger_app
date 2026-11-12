@@ -39,7 +39,9 @@ export async function TopBar({
 }) {
   const today = jstDate(jstDay(now));
   const next = nextDeadline(pendingAssignments, openTasks, now);
-  const syncs = (await Promise.all([getLastSync("aims"), getLastSync("gmail")])).filter(
+  const syncs = (
+    await Promise.all([getLastSync("aims"), getLastSync("gmail"), getLastSync("calendar")])
+  ).filter(
     (s) => s !== null,
   );
   const imported = [lastImportedAt("aims"), lastImportedAt("gmail")].filter((t) => t !== null);

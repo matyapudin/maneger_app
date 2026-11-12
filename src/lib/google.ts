@@ -1,6 +1,7 @@
-// Gmail integration via Google OAuth 2.0 (read-only access).
+// Google integration via OAuth 2.0: Gmail (read-only) and Google Calendar.
 // Docs: https://developers.google.com/identity/protocols/oauth2/web-server
 //       https://developers.google.com/gmail/api/reference/rest
+//       https://developers.google.com/calendar/api/v3/reference
 
 import { clearOAuthToken, getOAuthToken, getSetting, saveOAuthToken } from "@/lib/db";
 
@@ -9,24 +10,40 @@ export const STATE_COOKIE = "google_oauth_state";
 
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 
+// Least privilege for the calendar: read the calendar list and events, and
+// write only to calendars this app creates (the deadlines calendar).
+export const CALENDAR_SCOPES = [
+  "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+  "https://www.googleapis.com/auth/calendar.events.readonly",
+  "https://www.googleapis.com/auth/calendar.app.created",
+];
+
+const ALL_SCOPES = [GMAIL_SCOPE, ...CALENDAR_SCOPES];
+
 // Test-only: point every Google endpoint at a local mock server.
 const MOCK = process.env.GOOGLE_MOCK_BASE_URL?.replace(/\/+$/, "");
 const AUTH_URL = MOCK ? `${MOCK}/o/oauth2/v2/auth` : "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = MOCK ? `${MOCK}/token` : "https://oauth2.googleapis.com/token";
 const REVOKE_URL = MOCK ? `${MOCK}/revoke` : "https://oauth2.googleapis.com/revoke";
 const GMAIL_API = MOCK ? `${MOCK}/gmail/v1` : "https://gmail.googleapis.com/gmail/v1";
+export const CALENDAR_API = MOCK
+  ? `${MOCK}/calendar/v3`
+  : "https://www.googleapis.com/calendar/v3";
 
+// code: "api_disabled" (the API is off in Google Cloud),
+//       "insufficient_scope" (permission not granted yet).
 export class GoogleError extends Error {
   constructor(
     message: string,
     public readonly needsReconnect = false,
+    public readonly code?: "api_disabled" | "insufficient_scope",
   ) {
     super(message);
     this.name = "GoogleError";
   }
 }
 
-type GoogleConfig = { clientId: string; clientSecret: string };
+export type GoogleConfig = { clientId: string; clientSecret: string };
 
 export const GOOGLE_CLIENT_ID_KEY = "google_client_id";
 // "1" = import only Gmail's Primary tab (skip Promotions, Social, Updates, Forums).
@@ -53,7 +70,7 @@ export function buildAuthUrl(config: GoogleConfig, origin: string, state: string
     client_id: config.clientId,
     redirect_uri: redirectUri(origin),
     response_type: "code",
-    scope: GMAIL_SCOPE,
+    scope: ALL_SCOPES.join(" "),
     access_type: "offline", // get a refresh token
     prompt: "consent", // always return a refresh token, even on reconnect
     include_granted_scopes: "true",
@@ -66,6 +83,7 @@ type TokenResponse = {
   access_token: string;
   expires_in: number;
   refresh_token?: string;
+  scope?: string; // space-separated scopes actually granted
   error?: string;
   error_description?: string;
 };
@@ -94,23 +112,51 @@ async function tokenRequest(body: Record<string, string>): Promise<TokenResponse
   return data;
 }
 
-async function gmailGet<T>(path: string, accessToken: string): Promise<T> {
+type ApiError = {
+  error?: { message?: string; errors?: { reason?: string }[]; status?: string };
+};
+
+// Calls a Google API with the access token and turns errors into GoogleError.
+export async function googleFetch<T>(
+  url: string,
+  accessToken: string,
+  service: string,
+  init: RequestInit = {},
+): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${GMAIL_API}${path}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+    res = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
       cache: "no-store",
       signal: AbortSignal.timeout(20_000),
     });
   } catch (e) {
-    throw new GoogleError(`Gmail に接続できませんでした（${(e as Error).message}）`);
+    throw new GoogleError(`${service} に接続できませんでした（${(e as Error).message}）`);
   }
-  if (res.status === 401) throw new GoogleError("Gmail の認証が切れました", true);
+  if (res.status === 401) throw new GoogleError(`${service} の認証が切れました`, true);
+  if (res.status === 204) return undefined as T;
   if (!res.ok) {
-    const err = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
-    throw new GoogleError(err?.error?.message ?? `Gmail のエラー（HTTP ${res.status}）`);
+    const err = (await res.json().catch(() => null)) as ApiError | null;
+    const reasons = err?.error?.errors?.map((e) => e.reason) ?? [];
+    const message = err?.error?.message ?? `${service} のエラー（HTTP ${res.status}）`;
+    if (reasons.includes("accessNotConfigured") || /has not been used|is disabled/i.test(message)) {
+      throw new GoogleError(`${service} の API が Google Cloud で有効になっていません`, false, "api_disabled");
+    }
+    if (reasons.includes("insufficientPermissions") || err?.error?.status === "PERMISSION_DENIED") {
+      throw new GoogleError(`${service} を使う許可がまだありません`, false, "insufficient_scope");
+    }
+    throw new GoogleError(message);
   }
   return (await res.json()) as T;
+}
+
+async function gmailGet<T>(path: string, accessToken: string): Promise<T> {
+  return googleFetch<T>(`${GMAIL_API}${path}`, accessToken, "Gmail");
 }
 
 // Exchanges the authorization code from the callback and stores the tokens.
@@ -131,10 +177,18 @@ export async function completeAuth(config: GoogleConfig, origin: string, code: s
     accessToken: t.access_token,
     expiresAt: Date.now() + t.expires_in * 1000,
     account: profile.emailAddress,
+    scopes: t.scope ?? GMAIL_SCOPE,
   });
 }
 
-async function getAccessToken(config: GoogleConfig): Promise<string> {
+// Whether the user has granted the calendar permissions (older connections
+// only have Gmail; they need to connect once more).
+export function hasCalendarAccess(): boolean {
+  const scopes = getOAuthToken("google")?.scopes?.split(" ") ?? [];
+  return CALENDAR_SCOPES.every((s) => scopes.includes(s));
+}
+
+export async function getAccessToken(config: GoogleConfig): Promise<string> {
   const stored = getOAuthToken("google");
   if (!stored) throw new GoogleError("Gmail が接続されていません", true);
   // Reuse the access token until one minute before it expires.
@@ -152,6 +206,7 @@ async function getAccessToken(config: GoogleConfig): Promise<string> {
     accessToken: t.access_token,
     expiresAt: Date.now() + t.expires_in * 1000,
     account: stored.account,
+    scopes: t.scope ?? stored.scopes,
   });
   return t.access_token;
 }

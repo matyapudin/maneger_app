@@ -2,9 +2,11 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
-import { setPrimaryOnlyAction, unhideAction } from "@/app/actions";
+import { setPrimaryOnlyAction, setWriteDeadlinesAction, unhideAction } from "@/app/actions";
+import { APP_CALENDAR_NAME, writeDeadlinesEnabled } from "@/lib/calendar";
 import { smallButtonClass } from "@/app/hide-button";
 import {
+  clearCalendarEvents,
   clearEmails,
   clearServiceToken,
   dbPath,
@@ -24,6 +26,7 @@ import {
   getGoogleConfig,
   GOOGLE_CLIENT_ID_KEY,
   GOOGLE_CLIENT_SECRET_KEY,
+  hasCalendarAccess,
 } from "@/lib/google";
 import { AIMS_SERVICE, loginToMoodle, MoodleError } from "@/lib/moodle";
 
@@ -92,6 +95,7 @@ async function clearGoogleClient() {
   "use server";
   await disconnect();
   clearEmails();
+  clearCalendarEvents();
   setSetting(GOOGLE_CLIENT_ID_KEY, null);
   setSetting(GOOGLE_CLIENT_SECRET_KEY, null);
   recordSync("gmail", true, "Google の設定を削除しました。");
@@ -102,7 +106,8 @@ async function disconnectGoogle() {
   "use server";
   await disconnect();
   clearEmails();
-  recordSync("gmail", true, "Gmail との接続を解除しました。");
+  clearCalendarEvents();
+  recordSync("gmail", true, "Google との接続を解除しました。");
   revalidatePath("/", "layout");
 }
 
@@ -166,10 +171,13 @@ async function GoogleSection({ origin }: { origin: string }) {
   const savedInApp = getSetting(GOOGLE_CLIENT_ID_KEY) !== null;
   const account = await getConnectedAccount("google");
   const last = await getLastSync("gmail");
+  const lastCalendar = await getLastSync("calendar");
+  const calendarOk = account !== null && hasCalendarAccess();
+  const writeOn = writeDeadlinesEnabled();
   const redirect = `${origin}/api/auth/google/callback`;
   return (
     <section className={cardClass}>
-      <h2 className="panel-title">Google（Gmail）</h2>
+      <h2 className="panel-title">Google（Gmail・カレンダー）</h2>
 
       {!configured ? (
         <form action={saveGoogleClient} className="flex flex-col gap-2">
@@ -215,6 +223,44 @@ async function GoogleSection({ origin }: { origin: string }) {
       )}
 
       <Status source={last} />
+
+      {account && !calendarOk && (
+        <div className="flex flex-col gap-2 border-l-[3px] border-[var(--accent)] bg-[var(--surface-2)] px-3 py-2.5">
+          <p className="text-sm">
+            Google カレンダーと連携するには、カレンダーの許可を追加してください。Google の画面が開くので、もう一度許可を押します。
+            先に Google Cloud で「Google Calendar API」を有効にしておいてください（README の手順）。
+          </p>
+          <div>
+            <a href="/api/auth/google" className={`inline-block ${buttonClass}`}>
+              カレンダーの許可を追加
+            </a>
+          </div>
+        </div>
+      )}
+
+      {calendarOk && (
+        <div className="flex flex-col gap-2 border-t border-[var(--line)] pt-3">
+          <h3 className="text-sm font-semibold">Google カレンダー</h3>
+          <p className="text-sm muted">
+            表示中のカレンダーの予定を、ホームのカレンダー欄に表示しています。
+          </p>
+          <form action={setWriteDeadlinesAction} className="flex flex-wrap items-center gap-3">
+            <input type="hidden" name="enabled" value={writeOn ? "0" : "1"} />
+            <p className="text-sm">
+              AIMS の締め切りを Google カレンダーに書き込む：
+              <span className="font-medium">{writeOn ? "オン" : "オフ"}</span>
+            </p>
+            <button type="submit" className={smallButtonClass}>
+              {writeOn ? "オフにする" : "オンにする"}
+            </button>
+          </form>
+          <p className="-mt-1 text-xs muted">
+            「{APP_CALENDAR_NAME}」という専用のカレンダーを作って書き込みます。ほかのカレンダーは変更しません。
+            提出済み・提出不要にした課題は自動で消えます。オフにすると、書き込んだ締め切りをすべて消します。
+          </p>
+          <Status source={lastCalendar} />
+        </div>
+      )}
 
       {configured && savedInApp && (
         <details className="text-sm">

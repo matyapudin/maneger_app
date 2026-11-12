@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import {
   addTask,
   hide,
+  recordSync,
   setAssignmentUserStatus,
   setSetting,
   toggleTask,
@@ -11,12 +12,13 @@ import {
   type AssignmentUserStatus,
   type HiddenKind,
 } from "@/lib/db";
-import { GMAIL_PRIMARY_ONLY_KEY } from "@/lib/google";
-import { isStale, syncAll } from "@/lib/sync";
+import { clearDeadlines, WRITE_DEADLINES_KEY } from "@/lib/calendar";
+import { GMAIL_PRIMARY_ONLY_KEY, getGoogleConfig, hasCalendarAccess } from "@/lib/google";
+import { isStale, syncAll, syncCalendar } from "@/lib/sync";
 
 // ---------- Refresh ----------
 
-// The ↻ button: import from AIMS and Gmail now.
+// The ↻ button: import from AIMS, Gmail and Google Calendar now.
 export async function refreshAllAction() {
   await syncAll();
   revalidatePath("/", "layout");
@@ -83,5 +85,26 @@ export async function unhideAction(formData: FormData) {
 // Only import Gmail's "Primary" tab (skips Promotions, Social, ...).
 export async function setPrimaryOnlyAction(formData: FormData) {
   setSetting(GMAIL_PRIMARY_ONLY_KEY, formData.get("enabled") === "1" ? "1" : null);
+  revalidatePath("/", "layout");
+}
+
+// Turn writing AIMS deadlines to Google Calendar on or off. Turning it off
+// removes the events the app wrote; turning it on writes them right away.
+export async function setWriteDeadlinesAction(formData: FormData) {
+  const on = formData.get("enabled") === "1";
+  setSetting(WRITE_DEADLINES_KEY, on ? null : "0");
+  const config = getGoogleConfig();
+  if (config && hasCalendarAccess()) {
+    if (on) {
+      await syncCalendar();
+    } else {
+      try {
+        const removed = await clearDeadlines(config);
+        recordSync("calendar", true, `カレンダーへの書き込みをやめ、追加した締め切り ${removed} 件を削除しました。`);
+      } catch (e) {
+        recordSync("calendar", false, `締め切りの削除に失敗しました：${e instanceof Error ? e.message : "不明なエラー"}`);
+      }
+    }
+  }
   revalidatePath("/", "layout");
 }

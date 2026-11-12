@@ -91,6 +91,17 @@ function getDb(): DatabaseSync {
         ok INTEGER NOT NULL,
         message TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS calendar_events (
+        id TEXT PRIMARY KEY,          -- calendarId|eventId
+        calendar_name TEXT NOT NULL,
+        color TEXT NOT NULL,
+        title TEXT NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        all_day INTEGER NOT NULL,
+        location TEXT,
+        url TEXT
+      );
       CREATE TABLE IF NOT EXISTS hidden (
         kind TEXT NOT NULL,   -- 'email' | 'sender' | 'assignment' | 'course'
         value TEXT NOT NULL,  -- gmail id, sender address, assignment source id, course name
@@ -123,6 +134,7 @@ function getDb(): DatabaseSync {
     addColumnIfMissing(db, "emails", "snippet", "TEXT");
     addColumnIfMissing(db, "emails", "url", "TEXT");
     addColumnIfMissing(db, "emails", "sender_address", "TEXT");
+    addColumnIfMissing(db, "oauth_tokens", "scopes", "TEXT");
   }
   return db;
 }
@@ -335,13 +347,14 @@ export type OAuthToken = {
   access_token: string | null;
   expires_at: number | null;
   account: string | null;
+  scopes: string | null; // space-separated scopes the user granted
 };
 
 export function getOAuthToken(provider: string): OAuthToken | null {
   return (
     (getDb()
       .prepare(
-        "SELECT refresh_token, access_token, expires_at, account FROM oauth_tokens WHERE provider = ?",
+        "SELECT refresh_token, access_token, expires_at, account, scopes FROM oauth_tokens WHERE provider = ?",
       )
       .get(provider) as OAuthToken | undefined) ?? null
   );
@@ -349,17 +362,23 @@ export function getOAuthToken(provider: string): OAuthToken | null {
 
 export function saveOAuthToken(
   provider: string,
-  t: { refreshToken: string; accessToken: string; expiresAt: number; account: string | null },
+  t: {
+    refreshToken: string;
+    accessToken: string;
+    expiresAt: number;
+    account: string | null;
+    scopes: string | null;
+  },
 ) {
   getDb()
     .prepare(
-      `INSERT INTO oauth_tokens (provider, refresh_token, access_token, expires_at, account)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO oauth_tokens (provider, refresh_token, access_token, expires_at, account, scopes)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(provider) DO UPDATE SET refresh_token = excluded.refresh_token,
          access_token = excluded.access_token, expires_at = excluded.expires_at,
-         account = excluded.account`,
+         account = excluded.account, scopes = excluded.scopes`,
     )
-    .run(provider, t.refreshToken, t.accessToken, t.expiresAt, t.account);
+    .run(provider, t.refreshToken, t.accessToken, t.expiresAt, t.account, t.scopes);
 }
 
 export function clearOAuthToken(provider: string) {
@@ -482,4 +501,82 @@ export async function countHidden(table: "emails" | "assignments"): Promise<numb
       n: number;
     }
   ).n;
+}
+
+// ---------- Google Calendar events ----------
+
+export type CalendarEvent = {
+  id: string;
+  calendar_name: string;
+  color: string;
+  title: string;
+  start_ms: number;
+  end_ms: number;
+  all_day: number;
+  location: string | null;
+  url: string | null;
+};
+
+export function replaceCalendarEvents(
+  rows: {
+    id: string;
+    calendarName: string;
+    color: string;
+    title: string;
+    startMs: number;
+    endMs: number;
+    allDay: boolean;
+    location: string | null;
+    url: string | null;
+  }[],
+) {
+  const d = getDb();
+  const insert = d.prepare(
+    `INSERT OR REPLACE INTO calendar_events
+       (id, calendar_name, color, title, start_ms, end_ms, all_day, location, url)
+     VALUES (@id, @calendarName, @color, @title, @startMs, @endMs, @allDay, @location, @url)`,
+  );
+  inTransaction(d, () => {
+    d.exec("DELETE FROM calendar_events");
+    for (const r of rows) insert.run({ ...r, allDay: r.allDay ? 1 : 0 });
+  });
+}
+
+export function clearCalendarEvents() {
+  getDb().exec("DELETE FROM calendar_events");
+}
+
+// Events overlapping [fromMs, toMs).
+export async function listCalendarEvents(fromMs: number, toMs: number): Promise<CalendarEvent[]> {
+  await connection();
+  return getDb()
+    .prepare(
+      `SELECT id, calendar_name, color, title, start_ms, end_ms, all_day, location, url
+       FROM calendar_events WHERE start_ms < ? AND end_ms > ? ORDER BY all_day DESC, start_ms`,
+    )
+    .all(toMs, fromMs) as CalendarEvent[];
+}
+
+// Pending, visible assignments with a due date: what goes to Google Calendar.
+export function pendingDeadlines(): {
+  sourceId: string;
+  title: string;
+  course: string;
+  dueMs: number;
+  url: string | null;
+}[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT source_id, title, course, due_at, url FROM assignments
+       WHERE ${PENDING_ASSIGNMENT_SQL} AND ${VISIBLE_ASSIGNMENT_SQL}
+         AND due_at IS NOT NULL AND source_id IS NOT NULL`,
+    )
+    .all() as { source_id: string; title: string; course: string; due_at: string; url: string | null }[];
+  return rows.map((r) => ({
+    sourceId: r.source_id,
+    title: r.title,
+    course: r.course,
+    dueMs: Date.parse(r.due_at),
+    url: r.url,
+  }));
 }
