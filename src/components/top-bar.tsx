@@ -10,6 +10,8 @@ import {
   WEEKDAYS,
 } from "@/lib/format";
 import { AutoRefresh, RefreshButton } from "@/components/refresh";
+import { BgmPlayer } from "@/components/bgm-player";
+import { FocusTimer } from "@/components/focus-timer";
 import { lastImportedAt } from "@/lib/sync";
 
 type Deadline = { title: string; dueMs: number; dateOnly: boolean };
@@ -77,6 +79,9 @@ export async function TopBar({
         </span>
       )}
       <RefreshButton />
+      <span className="h-6 border-l border-[var(--line)]" aria-hidden />
+      <FocusTimer />
+      <BgmPlayer />
       <Link href="/settings" className="btn btn-icon" title="設定" aria-label="設定">
         ⚙
       </Link>
