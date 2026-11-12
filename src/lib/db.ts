@@ -1,12 +1,37 @@
 // Node.js built-in SQLite: no native add-on to compile, works on any Node >= 22.13.
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { connection } from "next/server";
 
-// SQLite database file. Override with DATABASE_PATH (see .env.example).
-const dbPath =
-  process.env.DATABASE_PATH ?? path.join(process.cwd(), "data", "app.db");
+// The database lives in a per-user folder, outside the app folder, so
+// re-downloading or updating the app keeps logins and data.
+// Windows: %APPDATA%\maneger_app\app.db   others: ~/.maneger_app/app.db
+// Override with DATABASE_PATH (see .env.example).
+function defaultDbPath() {
+  const base =
+    process.platform === "win32" && process.env.APPDATA
+      ? path.join(process.env.APPDATA, "maneger_app")
+      : path.join(os.homedir(), ".maneger_app");
+  return path.join(base, "app.db");
+}
+
+export const dbPath = process.env.DATABASE_PATH || defaultDbPath();
+
+// Older versions kept the database in ./data/app.db inside the app folder.
+const legacyDbPath = path.join(process.cwd(), "data", "app.db");
+
+function migrateLegacyDb() {
+  if (process.env.DATABASE_PATH || fs.existsSync(dbPath) || !fs.existsSync(legacyDbPath)) return;
+  // VACUUM INTO writes a complete copy, including changes still in the WAL file.
+  const old = new DatabaseSync(legacyDbPath);
+  try {
+    old.exec(`VACUUM INTO '${dbPath.replaceAll("'", "''")}'`);
+  } finally {
+    old.close();
+  }
+}
 
 let db: DatabaseSync | undefined;
 
@@ -32,6 +57,7 @@ function inTransaction(d: DatabaseSync, fn: () => void) {
 function getDb(): DatabaseSync {
   if (!db) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    migrateLegacyDb();
     db = new DatabaseSync(dbPath);
     db.exec("PRAGMA journal_mode = WAL");
     db.exec(`
@@ -63,6 +89,10 @@ function getDb(): DatabaseSync {
         synced_at TEXT NOT NULL,
         ok INTEGER NOT NULL,
         message TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS service_tokens (
         service TEXT PRIMARY KEY,
@@ -331,4 +361,24 @@ export function saveServiceToken(service: string, token: string, account: string
 
 export function clearServiceToken(service: string) {
   getDb().prepare("DELETE FROM service_tokens WHERE service = ?").run(service);
+}
+
+// App settings entered on the 設定 screen (e.g. the Google OAuth client).
+export function getSetting(key: string): string | null {
+  const row = getDb().prepare("SELECT value FROM settings WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
+export function setSetting(key: string, value: string | null) {
+  if (value === null || value === "") {
+    getDb().prepare("DELETE FROM settings WHERE key = ?").run(key);
+  } else {
+    getDb()
+      .prepare(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .run(key, value);
+  }
 }

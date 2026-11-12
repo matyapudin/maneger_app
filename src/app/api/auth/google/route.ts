@@ -8,8 +8,8 @@ export async function GET(request: NextRequest) {
   const origin = request.nextUrl.origin;
   const config = getGoogleConfig();
   if (!config) {
-    recordSync("gmail", false, "Google の設定（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）がありません。");
-    return NextResponse.redirect(new URL("/mail", origin));
+    recordSync("gmail", false, "先に Google のクライアント ID とシークレットを保存してください。");
+    return NextResponse.redirect(new URL("/settings", origin));
   }
 
   // Random state protects the callback against forged requests (CSRF).

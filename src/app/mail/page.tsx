@@ -2,8 +2,8 @@ import { Suspense } from "react";
 import { revalidatePath } from "next/cache";
 import { displayName, formatDateTime } from "@/lib/format";
 import { connection } from "next/server";
+import Link from "next/link";
 import {
-  clearEmails,
   clearOAuthToken,
   getConnectedAccount,
   getLastSync,
@@ -11,7 +11,7 @@ import {
   recordSync,
   replaceEmails,
 } from "@/lib/db";
-import { disconnect, fetchInbox, getGoogleConfig, GoogleError } from "@/lib/google";
+import { fetchInbox, getGoogleConfig, GoogleError } from "@/lib/google";
 
 const SOURCE = "gmail";
 
@@ -19,7 +19,7 @@ async function syncFromGmail() {
   "use server";
   const config = getGoogleConfig();
   if (!config) {
-    recordSync(SOURCE, false, "Google の設定（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）がありません。");
+    recordSync(SOURCE, false, "Google の設定がありません。設定画面で入力してください。");
   } else {
     try {
       const items = await fetchInbox(config);
@@ -30,7 +30,7 @@ async function syncFromGmail() {
       if (e instanceof GoogleError && e.needsReconnect) clearOAuthToken("google");
       const msg =
         e instanceof GoogleError && e.needsReconnect
-          ? "Gmail との接続が切れています。もう一度「Gmail に接続」を押してください。"
+          ? "Gmail との接続が切れています。設定画面で「Gmail に接続」を押してください。"
           : e instanceof Error
             ? e.message
             : "不明なエラー";
@@ -40,55 +40,28 @@ async function syncFromGmail() {
   revalidatePath("/mail");
 }
 
-async function disconnectGmail() {
-  "use server";
-  await disconnect();
-  clearEmails();
-  recordSync(SOURCE, true, "Gmail との接続を解除しました。");
-  revalidatePath("/mail");
-}
-
 const buttonClass = "rounded bg-foreground px-4 py-2 text-background";
-const subtleButtonClass =
-  "rounded border border-black/20 px-4 py-2 dark:border-white/25";
 
-async function ConnectionPanel() {
+async function SyncPanel() {
   await connection();
-  const configured = getGoogleConfig() !== null;
-  const account = await getConnectedAccount("google");
+  const connected = getGoogleConfig() !== null && (await getConnectedAccount("google")) !== null;
   const last = await getLastSync(SOURCE);
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-black/10 p-4 dark:border-white/15">
-      {!configured ? (
-        <p className="text-sm">
-          Gmail と連携するには、<code>.env.local</code> に <code>GOOGLE_CLIENT_ID</code> と{" "}
-          <code>GOOGLE_CLIENT_SECRET</code> を設定してください（README を参照）。
-        </p>
-      ) : account ? (
-        <>
-          <p className="text-sm">
-            接続中：<span className="font-medium">{account}</span>
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <form action={syncFromGmail}>
-              <button type="submit" className={buttonClass}>
-                Gmail から取り込む
-              </button>
-            </form>
-            <form action={disconnectGmail}>
-              <button type="submit" className={subtleButtonClass}>
-                接続を解除
-              </button>
-            </form>
-          </div>
-        </>
+      {connected ? (
+        <form action={syncFromGmail}>
+          <button type="submit" className={buttonClass}>
+            Gmail から取り込む
+          </button>
+        </form>
       ) : (
-        <div>
-          {/* A plain link: the route redirects the browser to Google. */}
-          <a href="/api/auth/google" className={`inline-block ${buttonClass}`}>
-            Gmail に接続
-          </a>
-        </div>
+        <p className="text-sm">
+          Gmail はまだ接続されていません。
+          <Link href="/settings" className="font-medium underline">
+            設定
+          </Link>
+          から接続してください。
+        </p>
       )}
       {last && (
         <p className={`text-sm ${last.ok ? "opacity-75" : "text-red-600 dark:text-red-400"}`}>
@@ -141,7 +114,7 @@ export default function MailPage() {
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-semibold">メール</h1>
       <Suspense fallback={<p>読み込み中…</p>}>
-        <ConnectionPanel />
+        <SyncPanel />
       </Suspense>
       <Suspense fallback={<p>読み込み中…</p>}>
         <EmailList />

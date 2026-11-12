@@ -14,12 +14,12 @@ function sameState(a: string | undefined, b: string | null) {
 export async function GET(request: NextRequest) {
   const origin = request.nextUrl.origin;
   const params = request.nextUrl.searchParams;
-  const res = NextResponse.redirect(new URL("/mail", origin));
+  const res = NextResponse.redirect(new URL("/settings", origin));
   res.cookies.delete({ name: STATE_COOKIE, path: "/api/auth/google" });
 
   const config = getGoogleConfig();
   if (!config) {
-    recordSync("gmail", false, "Google の設定（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）がありません。");
+    recordSync("gmail", false, "先に Google のクライアント ID とシークレットを保存してください。");
     return res;
   }
   if (params.get("error")) {
@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
 
   try {
     await completeAuth(config, origin, code);
-    recordSync("gmail", true, "Gmail に接続しました。「Gmail から取り込む」を押してください。");
+    recordSync("gmail", true, "Gmail に接続しました。");
   } catch (e) {
     recordSync("gmail", false, `Gmail への接続に失敗しました：${(e as Error).message}`);
   }

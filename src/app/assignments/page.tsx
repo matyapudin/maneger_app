@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { formatDateTime } from "@/lib/format";
 import { connection } from "next/server";
@@ -11,51 +12,15 @@ import {
   replaceAssignments,
   type Assignment,
 } from "@/lib/db";
-import {
-  AIMS_SERVICE,
-  fetchAssignments,
-  getMoodleConfig,
-  loginToMoodle,
-  MoodleError,
-} from "@/lib/moodle";
+import { AIMS_SERVICE, fetchAssignments, getMoodleConfig, MoodleError } from "@/lib/moodle";
 
 const SOURCE = "aims";
-
-async function loginAims(formData: FormData) {
-  "use server";
-  const username = String(formData.get("username") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-  if (!username || !password) {
-    recordSync(SOURCE, false, "ユーザー名とパスワードを入力してください。");
-  } else {
-    try {
-      const account = await loginToMoodle(username, password);
-      recordSync(SOURCE, true, `${account} さんとして AIMS に接続しました。「AIMS から取り込む」を押してください。`);
-    } catch (e) {
-      const msg =
-        e instanceof MoodleError && e.code === "invalidlogin"
-          ? "ユーザー名かパスワードが違います。AIMS にログインするときと同じものを入れてください。"
-          : e instanceof Error
-            ? e.message
-            : "不明なエラー";
-      recordSync(SOURCE, false, `AIMS への接続に失敗しました：${msg}`);
-    }
-  }
-  revalidatePath("/assignments");
-}
-
-async function logoutAims() {
-  "use server";
-  clearServiceToken(AIMS_SERVICE);
-  recordSync(SOURCE, true, "AIMS との接続を解除しました。");
-  revalidatePath("/assignments");
-}
 
 async function syncFromAims() {
   "use server";
   const config = getMoodleConfig();
   if (!config) {
-    recordSync(SOURCE, false, "AIMS に接続されていません。ユーザー名とパスワードでログインしてください。");
+    recordSync(SOURCE, false, "AIMS に接続されていません。設定画面でログインしてください。");
   } else {
     try {
       const items = await fetchAssignments(config);
@@ -65,7 +30,7 @@ async function syncFromAims() {
       if (e instanceof MoodleError && e.code === "invalidtoken") {
         // The saved key no longer works: forget it so the login form shows again.
         clearServiceToken(AIMS_SERVICE);
-        recordSync(SOURCE, false, "AIMS との接続が切れました。もう一度ログインしてください。");
+        recordSync(SOURCE, false, "AIMS との接続が切れました。設定画面でもう一度ログインしてください。");
       } else {
         recordSync(SOURCE, false, `取り込みに失敗しました：${e instanceof Error ? e.message : "不明なエラー"}`);
       }
@@ -79,62 +44,28 @@ function requestTime() {
   return Date.now();
 }
 
-const inputClass =
-  "rounded border border-black/20 bg-transparent px-3 py-2 dark:border-white/25";
 const buttonClass = "rounded bg-foreground px-4 py-2 text-background";
-const subtleButtonClass = "rounded border border-black/20 px-4 py-2 dark:border-white/25";
 
 async function SyncPanel() {
   await connection();
-  const saved = getServiceToken(AIMS_SERVICE);
+  const connected = getServiceToken(AIMS_SERVICE) !== null;
   const last = await getLastSync(SOURCE);
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-black/10 p-4 dark:border-white/15">
-      {saved ? (
-        <>
-          <p className="text-sm">
-            接続中：<span className="font-medium">{saved.account ?? "AIMS"}</span>
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <form action={syncFromAims}>
-              <button type="submit" className={buttonClass}>
-                AIMS から取り込む
-              </button>
-            </form>
-            <form action={logoutAims}>
-              <button type="submit" className={subtleButtonClass}>
-                接続を解除
-              </button>
-            </form>
-          </div>
-        </>
-      ) : (
-        <form action={loginAims} className="flex flex-col gap-2">
-          <p className="text-sm">
-            AIMS にログインするときのユーザー名とパスワードを入れてください。
-            パスワードは保存せず、AIMS から受け取った「鍵」だけをこのパソコンに保存します。
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <input
-              name="username"
-              required
-              autoComplete="username"
-              placeholder="ユーザー名"
-              className={`${inputClass} min-w-0 flex-1`}
-            />
-            <input
-              name="password"
-              type="password"
-              required
-              autoComplete="current-password"
-              placeholder="パスワード"
-              className={`${inputClass} min-w-0 flex-1`}
-            />
-            <button type="submit" className={buttonClass}>
-              AIMS に接続
-            </button>
-          </div>
+      {connected ? (
+        <form action={syncFromAims}>
+          <button type="submit" className={buttonClass}>
+            AIMS から取り込む
+          </button>
         </form>
+      ) : (
+        <p className="text-sm">
+          AIMS はまだ接続されていません。
+          <Link href="/settings" className="font-medium underline">
+            設定
+          </Link>
+          から接続してください。
+        </p>
       )}
       {last && (
         <p className={`text-sm ${last.ok ? "opacity-75" : "text-red-600 dark:text-red-400"}`}>

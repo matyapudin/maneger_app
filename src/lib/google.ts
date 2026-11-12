@@ -2,7 +2,7 @@
 // Docs: https://developers.google.com/identity/protocols/oauth2/web-server
 //       https://developers.google.com/gmail/api/reference/rest
 
-import { clearOAuthToken, getOAuthToken, saveOAuthToken } from "@/lib/db";
+import { clearOAuthToken, getOAuthToken, getSetting, saveOAuthToken } from "@/lib/db";
 
 // Cookie holding the OAuth "state" value between the redirect and the callback.
 export const STATE_COOKIE = "google_oauth_state";
@@ -28,10 +28,16 @@ export class GoogleError extends Error {
 
 type GoogleConfig = { clientId: string; clientSecret: string };
 
-// Reads GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (set them in .env.local).
+export const GOOGLE_CLIENT_ID_KEY = "google_client_id";
+export const GOOGLE_CLIENT_SECRET_KEY = "google_client_secret";
+
+// The Google OAuth client entered on the 設定 screen.
+// GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in .env.local still work as a fallback.
 export function getGoogleConfig(): GoogleConfig | null {
-  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const clientId = (getSetting(GOOGLE_CLIENT_ID_KEY) ?? process.env.GOOGLE_CLIENT_ID)?.trim();
+  const clientSecret = (
+    getSetting(GOOGLE_CLIENT_SECRET_KEY) ?? process.env.GOOGLE_CLIENT_SECRET
+  )?.trim();
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret };
 }

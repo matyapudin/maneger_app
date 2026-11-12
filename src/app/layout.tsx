@@ -12,6 +12,7 @@ const navItems = [
   { href: "/tasks", label: "タスク" },
   { href: "/mail", label: "メール" },
   { href: "/assignments", label: "課題" },
+  { href: "/settings", label: "設定" },
 ];
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
