@@ -109,6 +109,10 @@ function getDb(): DatabaseSync {
     `);
     // Columns added after the first version: add them to older databases.
     addColumnIfMissing(db, "assignments", "url", "TEXT");
+    addColumnIfMissing(db, "assignments", "course_id", "INTEGER");
+    addColumnIfMissing(db, "assignments", "requires_submission", "INTEGER NOT NULL DEFAULT 1");
+    // Set by the user: 'done' or 'not_required'. Never overwritten by a sync.
+    addColumnIfMissing(db, "assignments", "user_status", "TEXT");
     addColumnIfMissing(db, "emails", "snippet", "TEXT");
     addColumnIfMissing(db, "emails", "url", "TEXT");
   }
@@ -139,7 +143,29 @@ export type Assignment = {
   due_at: string | null;
   submitted: number;
   url: string | null;
+  course_id: number | null;
+  requires_submission: number;
+  user_status: AssignmentUserStatus | null;
 };
+
+export type AssignmentUserStatus = "done" | "not_required";
+
+// What the assignment needs from the user right now.
+export type AssignmentState = "pending" | "submitted" | "done" | "not_required";
+
+export function assignmentState(a: Assignment): AssignmentState {
+  if (a.submitted) return "submitted";
+  if (a.user_status === "done") return "done";
+  if (a.user_status === "not_required" || !a.requires_submission) return "not_required";
+  return "pending";
+}
+
+const ASSIGNMENT_COLUMNS =
+  "id, course, title, due_at, submitted, url, course_id, requires_submission, user_status";
+
+// SQL version of assignmentState(...) === "pending", for queries.
+const PENDING_ASSIGNMENT_SQL =
+  "submitted = 0 AND requires_submission = 1 AND user_status IS NULL";
 
 export type SyncLog = {
   synced_at: string;
@@ -180,17 +206,23 @@ export async function listAssignments(): Promise<Assignment[]> {
   await connection();
   return getDb()
     .prepare(
-      "SELECT id, course, title, due_at, submitted, url FROM assignments ORDER BY submitted, due_at IS NULL, due_at",
+      `SELECT ${ASSIGNMENT_COLUMNS} FROM assignments ORDER BY course, due_at IS NULL, due_at`,
     )
     .all() as Assignment[];
 }
 
+export function setAssignmentUserStatus(id: number, status: AssignmentUserStatus | null) {
+  getDb().prepare("UPDATE assignments SET user_status = ? WHERE id = ?").run(status, id);
+}
+
 export type AssignmentInput = {
   sourceId: string;
+  courseId: number;
   course: string;
   title: string;
   dueAt: string | null;
   submitted: boolean;
+  requiresSubmission: boolean;
   url: string;
 };
 
@@ -198,11 +230,12 @@ export type AssignmentInput = {
 export function replaceAssignments(prefix: string, items: AssignmentInput[]) {
   const d = getDb();
   const upsert = d.prepare(`
-    INSERT INTO assignments (source_id, course, title, due_at, submitted, url)
-    VALUES (@sourceId, @course, @title, @dueAt, @submitted, @url)
+    INSERT INTO assignments (source_id, course_id, course, title, due_at, submitted, requires_submission, url)
+    VALUES (@sourceId, @courseId, @course, @title, @dueAt, @submitted, @requiresSubmission, @url)
     ON CONFLICT(source_id) DO UPDATE SET
-      course = excluded.course, title = excluded.title, due_at = excluded.due_at,
-      submitted = excluded.submitted, url = excluded.url
+      course_id = excluded.course_id, course = excluded.course, title = excluded.title,
+      due_at = excluded.due_at, submitted = excluded.submitted,
+      requires_submission = excluded.requires_submission, url = excluded.url
   `);
   inTransaction(d, () => {
     const keep = new Set(items.map((i) => i.sourceId));
@@ -211,7 +244,13 @@ export function replaceAssignments(prefix: string, items: AssignmentInput[]) {
       .all(prefix) as { source_id: string }[];
     const del = d.prepare("DELETE FROM assignments WHERE source_id = ?");
     for (const row of existing) if (!keep.has(row.source_id)) del.run(row.source_id);
-    for (const i of items) upsert.run({ ...i, submitted: i.submitted ? 1 : 0 });
+    for (const i of items) {
+      upsert.run({
+        ...i,
+        submitted: i.submitted ? 1 : 0,
+        requiresSubmission: i.requiresSubmission ? 1 : 0,
+      });
+    }
   });
 }
 
@@ -326,9 +365,7 @@ export async function getDashboard(): Promise<DashboardData> {
       .prepare("SELECT id, title, due_date, done FROM tasks WHERE done = 0")
       .all() as Task[],
     pendingAssignments: d
-      .prepare(
-        "SELECT id, course, title, due_at, submitted, url FROM assignments WHERE submitted = 0",
-      )
+      .prepare(`SELECT ${ASSIGNMENT_COLUMNS} FROM assignments WHERE ${PENDING_ASSIGNMENT_SQL}`)
       .all() as Assignment[],
     unreadEmails: d
       .prepare(

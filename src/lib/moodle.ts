@@ -106,6 +106,8 @@ type AssignmentsResponse = {
       cmid: number;
       name: string;
       duedate: number; // unix seconds, 0 = no due date
+      nosubmissions?: number; // 1 = students submit nothing in Moodle
+      configs?: { plugin: string; subtype: string; name: string; value: string }[];
     }[];
   }[];
 };
@@ -119,12 +121,31 @@ type SubmissionStatusResponse = {
 
 export type MoodleAssignment = {
   sourceId: string;
+  courseId: number;
   course: string;
   title: string;
   dueAt: string | null; // ISO 8601 (UTC)
   submitted: boolean;
+  requiresSubmission: boolean;
   url: string;
 };
+
+type AssignmentInfo = AssignmentsResponse["courses"][number]["assignments"][number];
+
+// An assignment needs a submission only if Moodle has a way to submit it:
+// not marked "no submissions", and at least one submission type (file,
+// online text, ...) enabled. Feedback comments don't count.
+export function requiresSubmission(a: AssignmentInfo): boolean {
+  if (a.nosubmissions === 1) return false;
+  if (!a.configs) return true; // older Moodle without configs: assume yes
+  return a.configs.some(
+    (c) =>
+      c.subtype === "assignsubmission" &&
+      c.name === "enabled" &&
+      c.value === "1" &&
+      c.plugin !== "comments",
+  );
+}
 
 async function mapWithLimit<T, R>(
   items: T[],
@@ -147,29 +168,35 @@ async function mapWithLimit<T, R>(
 export async function fetchAssignments(config: MoodleConfig): Promise<MoodleAssignment[]> {
   const data = await call<AssignmentsResponse>(config, "mod_assign_get_assignments");
   const flat = data.courses.flatMap((c) =>
-    c.assignments.map((a) => ({ course: c.fullname, a })),
+    c.assignments.map((a) => ({ courseId: c.id, course: c.fullname, a })),
   );
 
-  return mapWithLimit(flat, 5, async ({ course, a }) => {
+  return mapWithLimit(flat, 5, async ({ courseId, course, a }) => {
+    const needsSubmission = requiresSubmission(a);
     let submitted = false;
-    try {
-      const s = await call<SubmissionStatusResponse>(
-        config,
-        "mod_assign_get_submission_status",
-        { assignid: a.id },
-      );
-      const status =
-        s.lastattempt?.submission?.status ?? s.lastattempt?.teamsubmission?.status;
-      submitted = status === "submitted";
-    } catch {
-      // Status unavailable (e.g. no permission): treat as not submitted.
+    // Only ask for the submission status when there is something to submit.
+    if (needsSubmission) {
+      try {
+        const s = await call<SubmissionStatusResponse>(
+          config,
+          "mod_assign_get_submission_status",
+          { assignid: a.id },
+        );
+        const status =
+          s.lastattempt?.submission?.status ?? s.lastattempt?.teamsubmission?.status;
+        submitted = status === "submitted";
+      } catch {
+        // Status unavailable (e.g. no permission): treat as not submitted.
+      }
     }
     return {
       sourceId: `aims-assign-${a.id}`,
+      courseId,
       course,
       title: a.name,
       dueAt: a.duedate ? new Date(a.duedate * 1000).toISOString() : null,
       submitted,
+      requiresSubmission: needsSubmission,
       url: `${config.baseUrl}/mod/assign/view.php?id=${a.cmid}`,
     };
   });
