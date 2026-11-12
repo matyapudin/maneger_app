@@ -1,6 +1,10 @@
 // Minimal client for the Moodle web service API (AIMS runs on Moodle).
 // Docs: https://docs.moodle.org/dev/Web_service_API_functions
 
+import { getServiceToken, saveServiceToken } from "@/lib/db";
+
+export const AIMS_SERVICE = "aims";
+
 export class MoodleError extends Error {
   constructor(
     message: string,
@@ -13,12 +17,45 @@ export class MoodleError extends Error {
 
 export type MoodleConfig = { baseUrl: string; token: string };
 
-// Reads MOODLE_BASE_URL and MOODLE_TOKEN (set them in .env.local).
+// AIMS address; MOODLE_BASE_URL can point elsewhere (e.g. a test server).
+export function moodleBaseUrl() {
+  return (process.env.MOODLE_BASE_URL?.trim() || "https://aims.aiu.ac.jp").replace(/\/+$/, "");
+}
+
+// The token saved by logging in from the app, or null if not logged in yet.
 export function getMoodleConfig(): MoodleConfig | null {
-  const baseUrl = process.env.MOODLE_BASE_URL?.trim().replace(/\/+$/, "");
-  const token = process.env.MOODLE_TOKEN?.trim();
-  if (!baseUrl || !token) return null;
-  return { baseUrl, token };
+  const saved = getServiceToken(AIMS_SERVICE);
+  return saved ? { baseUrl: moodleBaseUrl(), token: saved.token } : null;
+}
+
+type TokenResponse = { token?: string; error?: string; errorcode?: string };
+type SiteInfo = { fullname?: string; username?: string };
+
+// Logs in like the official Moodle app: exchanges username/password for a
+// web service token. Only the token is stored; the password is not kept.
+export async function loginToMoodle(username: string, password: string): Promise<string> {
+  const baseUrl = moodleBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/login/token.php`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username, password, service: "moodle_mobile_app" }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (e) {
+    throw new MoodleError(`AIMS に接続できませんでした（${(e as Error).message}）`);
+  }
+  if (!res.ok) throw new MoodleError(`AIMS がエラーを返しました（HTTP ${res.status}）`);
+  const data = (await res.json()) as TokenResponse;
+  if (!data.token) {
+    throw new MoodleError(data.error ?? "AIMS からキーを受け取れませんでした", data.errorcode);
+  }
+  const info = await call<SiteInfo>({ baseUrl, token: data.token }, "core_webservice_get_site_info");
+  const account = info.fullname || info.username || username;
+  saveServiceToken(AIMS_SERVICE, data.token, account);
+  return account;
 }
 
 async function call<T>(

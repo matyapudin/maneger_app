@@ -64,6 +64,11 @@ function getDb(): DatabaseSync {
         ok INTEGER NOT NULL,
         message TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS service_tokens (
+        service TEXT PRIMARY KEY,
+        token TEXT NOT NULL,
+        account TEXT
+      );
       CREATE TABLE IF NOT EXISTS oauth_tokens (
         provider TEXT PRIMARY KEY,
         refresh_token TEXT NOT NULL,
@@ -304,4 +309,26 @@ export async function getDashboard(): Promise<DashboardData> {
       n: number;
     }).n,
   };
+}
+
+// Simple API tokens (e.g. the AIMS/Moodle web service token).
+export function getServiceToken(service: string): { token: string; account: string | null } | null {
+  return (
+    (getDb()
+      .prepare("SELECT token, account FROM service_tokens WHERE service = ?")
+      .get(service) as { token: string; account: string | null } | undefined) ?? null
+  );
+}
+
+export function saveServiceToken(service: string, token: string, account: string | null) {
+  getDb()
+    .prepare(
+      `INSERT INTO service_tokens (service, token, account) VALUES (?, ?, ?)
+       ON CONFLICT(service) DO UPDATE SET token = excluded.token, account = excluded.account`,
+    )
+    .run(service, token, account);
+}
+
+export function clearServiceToken(service: string) {
+  getDb().prepare("DELETE FROM service_tokens WHERE service = ?").run(service);
 }
