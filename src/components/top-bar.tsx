@@ -50,31 +50,42 @@ export async function TopBar({
   const errors = syncs.filter((s) => !s.ok);
 
   return (
-    <header className="glass flex h-[52px] flex-none items-center gap-5 px-5">
+    // Everything stays on one line; only the next-deadline text shrinks (…).
+    <header className="glass flex h-[52px] flex-none items-center gap-3 px-4 whitespace-nowrap [&>*]:flex-none 2xl:gap-4 2xl:px-5">
       <div className="flex items-center gap-2.5 text-[14px] font-bold tracking-[0.2em]">
         <span className="grid h-[22px] w-[22px] place-items-center bg-[var(--accent)] text-[12px] tracking-normal text-white">
           M
         </span>
-        MANAGER
+        {/* The word is hidden on narrow screens; the M logo stays. */}
+        <span className="hidden 2xl:inline">MANAGER</span>
       </div>
-      <div className="border-l border-[var(--line)] pl-4 font-medium">
+      <div className="border-l border-[var(--line)] pl-3 font-medium">
         {today.getUTCMonth() + 1}月{today.getUTCDate()}日（{WEEKDAYS[today.getUTCDay()]}）
       </div>
-      {next && (
-        <div className="min-w-0 truncate border-l-[3px] border-[var(--danger)] bg-white px-3 py-1 text-[13px]">
+      {next ? (
+        <div
+          className="min-w-0 !flex-1 truncate border-l-[3px] border-[var(--danger)] bg-white px-3 py-1 text-[13px]"
+          title={`次の締め切り：${next.title} ${formatDue(next.dueMs, now, next.dateOnly)}`}
+        >
           次の締め切り <b className="danger">{next.title}</b> {formatDue(next.dueMs, now, next.dateOnly)} ・{" "}
           {formatRemaining(next.dueMs, now)}
         </div>
+      ) : (
+        <div className="!flex-1" />
       )}
-      <div className="flex-1" />
       {errors.length > 0 && (
-        <Link href="/settings" className="max-w-[360px] truncate text-xs danger underline" title={errors.map((e) => e.message).join("\n")}>
-          ⚠ {errors[0].message}
+        // Short label; the full messages show on hover and on 設定.
+        <Link
+          href="/settings"
+          className="text-xs font-semibold danger underline"
+          title={errors.map((e) => e.message).join("\n")}
+        >
+          ⚠ エラー{errors.length > 1 ? ` ${errors.length}` : ""}
         </Link>
       )}
       <AutoRefresh />
       {imported.length > 0 && (
-        <span className="text-xs muted">
+        <span className="hidden text-xs muted 2xl:inline">
           {formatAgo(Math.min(...imported), now).replace(/前$/, "前に")}更新
         </span>
       )}

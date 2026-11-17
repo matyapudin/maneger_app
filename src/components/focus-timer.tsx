@@ -178,7 +178,7 @@ export function FocusTimer() {
   return (
     <div
       className="flex h-8 items-center border border-[var(--line)] bg-white/60 text-[13px]"
-      title="集中タイマー"
+      title={`集中タイマー（今日 ${state.doneCount} 回）`}
     >
       <button
         type="button"
@@ -222,7 +222,7 @@ export function FocusTimer() {
           </option>
         ))}
       </select>
-      <span className="border-l border-[var(--line)] px-2 text-xs muted" title="今日終えた作業の回数">
+      <span className="hidden border-l border-[var(--line)] px-2 text-xs muted 2xl:inline" title="今日終えた作業の回数">
         今日 {state.doneCount} 回
       </span>
     </div>
